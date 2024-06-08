@@ -18,7 +18,7 @@ class DataFrameFeed(BaseBarFeed):
 
         super(DataFrameFeed, self).__init__(frequency, maxLen)
 
-        self.__completeDf = completeDf
+        self.__completeDf: pd.DataFrame = completeDf
         self.__df = df
         self.__frequency = frequency
         self.__haveAdjClose = False
@@ -54,7 +54,7 @@ class DataFrameFeed(BaseBarFeed):
         return self.__dateTimes[self.__nextPos] if self.__nextPos < len(self.__dateTimes) else None
 
     def getCurrentDateTime(self):
-        return self.__currentDateTime
+        return self.__currentDateTime if self.__currentDateTime is not None else self.peekDateTime()
 
     def start(self):
         super(DataFrameFeed, self).start()
@@ -115,6 +115,12 @@ class DataFrameFeed(BaseBarFeed):
 
     def getLastUpdatedDateTime(self):
         return self.__currentDateTime
+    
+    def getLastReceivedDateTime(self):
+        return self.__currentDateTime
+    
+    def getNextBarsDateTime(self):
+        return self.__currentDateTime
 
     def isDataFeedAlive(self, heartBeatInterval=5):
         return True
@@ -132,4 +138,5 @@ class DataFrameFeed(BaseBarFeed):
             (self.__completeDf['Ticker'] == instrument)
         )
 
-        return self.__completeDf[mask]
+        return self.__completeDf[mask].resample(f'{interval}min', on="Date/Time").agg(
+            {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum", "Open Interest": "sum"}).reset_index().dropna()

@@ -5,22 +5,30 @@ import threading
 import traceback
 import socket
 import time
+from urllib.parse import parse_qs, urlparse
 from logging.handlers import SysLogHandler
 from importlib import import_module
-
 import flet as ft
-from components import StrategiesContainer, LoggingControl
+import sys
+import sentry_sdk
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir)))
+
+from views.strategies import StrategiesView
+from views.trades import TradesView
 from pyalgomate.telegram import TelegramBot
 from pyalgomate.brokers import getFeed, getBroker
 from pyalgomate.core import State
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+formatter = logging.Formatter(
+    "[%(levelname)-5s]|[%(asctime)s]|[PID:%(process)d::TID:%(thread)d]|[%(name)s::%(module)s::%(funcName)s::%("
+    "lineno)d]|=> %(message)s"
+)
 
-fileHandler = logging.FileHandler('PyAlgoMate.log')
+fileHandler = logging.FileHandler('PyAlgoMate.log', 'a', 'utf-8')
 fileHandler.setLevel(logging.INFO)
 fileHandler.setFormatter(formatter)
 
@@ -33,6 +41,7 @@ logger.addHandler(consoleHandler)
 
 logging.getLogger("requests").setLevel(logging.WARNING)
 
+
 def GetFeedNStrategies(creds):
     with open("strategies.yaml", "r") as file:
         config = yaml.safe_load(file)
@@ -44,10 +53,9 @@ def GetFeedNStrategies(creds):
 
     strategies = []
 
-    feed, api = getFeed(
-        creds, broker=config['Broker'], underlyings=config['Underlyings'])
+    _feed, api = getFeed(creds, broker=config['Broker'], underlyings=config['Underlyings'])
 
-    feed.start()
+    _feed.start()
 
     for strategyName, details in config['Strategies'].items():
         try:
@@ -65,7 +73,7 @@ def GetFeedNStrategies(creds):
             strategyArgsDict = {
                 key: value for item in strategyArgs for key, value in item.items()}
 
-            broker = getBroker(feed, api, config['Broker'], strategyMode)
+            broker = getBroker(_feed, api, config['Broker'], strategyMode)
 
             if hasattr(strategyClass, 'getAdditionalArgs') and callable(getattr(strategyClass, 'getAdditionalArgs')):
                 additionalArgs = strategyClass.getAdditionalArgs(broker)
@@ -76,7 +84,7 @@ def GetFeedNStrategies(creds):
                             strategyArgsDict[key] = value
 
             strategyInstance = strategyClass(
-                feed=feed, broker=broker, **strategyArgsDict)
+                feed=_feed, broker=broker, **strategyArgsDict)
 
             strategies.append(strategyInstance)
         except Exception as e:
@@ -84,7 +92,7 @@ def GetFeedNStrategies(creds):
                 f'Error in creating strategy instance for <{strategyName}>. Error: {e}')
             logger.exception(traceback.format_exc())
 
-    return feed, strategies
+    return _feed, strategies
 
 
 def runStrategy(strategy):
@@ -111,8 +119,15 @@ creds = None
 with open('cred.yml') as f:
     creds = yaml.load(f, Loader=yaml.FullLoader)
 
+sentry_dns = creds.get('SENTRY', {}).get('SENTRY_DNS')
+env_local = creds.get('ENV', {}).get('LOCAL')
+prod_provider = creds.get('ENV', {}).get('PROD_PROVIDER')
+
 if 'PaperTrail' in creds:
     papertrailCreds = creds['PaperTrail']['address'].split(':')
+
+if sentry_dns and env_local == 'True':
+    sentry_sdk.init(sentry_dns, server_name=prod_provider)
 
     class ContextFilter(logging.Filter):
         hostname = socket.gethostname()
@@ -121,16 +136,18 @@ if 'PaperTrail' in creds:
             record.hostname = ContextFilter.hostname
             return True
 
+
     syslog = SysLogHandler(
         address=(papertrailCreds[0], int(papertrailCreds[1])))
     syslog.addFilter(ContextFilter())
-    format = '%(asctime)s [%(hostname)s] [%(processName)s:%(process)d] [%(threadName)s:%(thread)d] [%(name)s] [%(levelname)s] - %(message)s'
+    format = ('%(asctime)s [%(hostname)s] [%(processName)s:%(process)d] [%(threadName)s:%(thread)d] [%(name)s] [%('
+              'levelname)s] - %(message)s')
     formatter = logging.Formatter(format, datefmt='%b %d %H:%M:%S')
     syslog.setFormatter(formatter)
     logger.addHandler(syslog)
     logger.setLevel(logging.INFO)
 
-feed, strategies = GetFeedNStrategies(creds)
+_feed, strategies = GetFeedNStrategies(creds)
 
 threads = []
 
@@ -145,45 +162,54 @@ def main(page: ft.Page):
     page.horizontal_alignment = "center"
     page.vertical_alignment = "center"
     page.padding = ft.padding.only(left=50, right=50)
-    page.bgcolor = "#212328"
+    page.scroll = ft.ScrollMode.HIDDEN
+    lock = threading.Lock()
 
-    strategiesContainer = StrategiesContainer(
-        page=page, feed=feed, strategies=strategies)
+    strategiesView = StrategiesView(page, _feed, strategies)
 
-    t = ft.Tabs(
-        selected_index=0,
-        animation_duration=300,
-        label_color='white90',
-        unselected_label_color='white54',
-        tabs=[
-            ft.Tab(
-                text="Strategies",
-                content=strategiesContainer,
-            ),
-            ft.Tab(
-                text="Trade Terminal",
-                icon=ft.icons.TERMINAL,
-                content=ft.Text("This is Tab 2"),
+    def route_change(route):
+        with lock:
+            route = urlparse(route.route)
+            params = parse_qs(route.query)
+            page.views.clear()
+
+            page.views.append(
+                strategiesView
             )
-        ],
-        expand=1,
-    )
+            if route.path == "/trades":
+                strategyName = params['strategyName'][0]
+                strategy = [strategy for strategy in strategies if strategy.strategyName == strategyName][0]
+                page.views.append(
+                    TradesView(page, strategy)
+                )
+            elif route.path == '/strategy':
+                strategyName = params['strategyName'][0]
+                strategy = [strategy for strategy in strategies if strategy.strategyName == strategyName][0]
+                page.views.append(strategy.getView(page))
+            page.update()
 
-    page.add(t)
+    def view_pop(view: ft.View):
+        page.views.pop()
+        top_view = page.views[-1]
+        page.go(top_view.route)
 
-    page.update()
+    page.on_route_change = route_change
+    page.on_view_pop = view_pop
+    page.go(page.route)
 
     while True:
-        strategiesContainer.updateStrategies()
-        time.sleep(0.1)
+        with lock:
+            if len(page.views):
+                topView = page.views[-1]
+                if topView in page.views:
+                    topView.update()
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":
     fletPath = os.getenv("FLET_PATH", '')
     fletPort = int(os.getenv("FLET_PORT", '8502'))
-    fletView = os.getenv("FLET_VIEW", ft.AppView.FLET_APP)
-    try:
-        fletView = ft.AppView(fletView)
-    except Exception as e:
+    fletView = os.getenv("FLET_VIEW", ft.FLET_APP)
+    if fletView != ft.FLET_APP:
         fletView = None
     ft.app(name=fletPath, target=main, view=fletView, port=fletPort)

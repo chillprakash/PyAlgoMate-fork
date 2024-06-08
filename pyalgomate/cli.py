@@ -1,4 +1,3 @@
-
 import click
 import zmq
 import json
@@ -77,6 +76,7 @@ def getDataFrameFromParquets(dataFiles, startDate=None, endDate=None):
 
     return df
 
+
 def backtest(strategyClass, completeDf, df, underlyings, send_to_ui, telegramBot, load_all):
     from pyalgomate.backtesting import DataFrameFeed, CustomCSVFeed
     from pyalgomate.brokers import BacktestingBroker
@@ -90,7 +90,7 @@ def backtest(strategyClass, completeDf, df, underlyings, send_to_ui, telegramBot
     else:
         feed = DataFrameFeed.DataFrameFeed(completeDf, df, underlyings, )
 
-    print(f"Time took in loading the data <{datetime.datetime.now()-start}>")
+    print(f"Time took in loading the data <{datetime.datetime.now() - start}>")
 
     broker = BacktestingBroker(200000, feed)
 
@@ -108,9 +108,8 @@ def backtest(strategyClass, completeDf, df, underlyings, send_to_ui, telegramBot
     try:
         strategy.run()
     except Exception as e:
-        click.echo(f'Exception occured while running {strategy.name}. Error <{e}>')
+        click.echo(f'Exception occurred while running {strategy.strategyName}. Error <{e}>')
 
-    
     return strategy.getTrades()
 
 
@@ -119,13 +118,16 @@ def backtest(strategyClass, completeDf, df, underlyings, send_to_ui, telegramBot
 @click.option('--data', prompt='Specify data file', multiple=True)
 @click.option('--port', help='Specify a zeroMQ port to send data to', default=5680, type=click.INT)
 @click.option('--send-to-ui', help='Specify if data needs to be sent to UI', default=False, type=click.BOOL)
-@click.option('--send-to-telegram', help='Specify if messages needs to be sent to telegram', default=False, type=click.BOOL)
-@click.option('--from-date', help='Specify a from date', callback=checkDate,  default=None, type=click.STRING)
+@click.option('--send-to-telegram', help='Specify if messages needs to be sent to telegram', default=False,
+              type=click.BOOL)
+@click.option('--from-date', help='Specify a from date', callback=checkDate, default=None, type=click.STRING)
 @click.option('--to-date', help='Specify a to date', callback=checkDate, default=None, type=click.STRING)
-@click.option('--parallelize', help='Specify if backtest in parallel', default=None, type=click.Choice(['Day', 'Month']))
+@click.option('--parallelize', help='Specify if backtest in parallel', default=None,
+              type=click.Choice(['Day', 'Month']))
 @click.option('--load-all', help='Specify if all the data needs to be loaded', default=False, type=click.BOOL)
 @click.pass_obj
-def runBacktest(strategyClass, underlying, data, port, send_to_ui, send_to_telegram, from_date, to_date, parallelize, load_all):
+def runBacktest(strategyClass, underlying, data, port, send_to_ui, send_to_telegram, from_date, to_date, parallelize,
+                load_all):
     import yaml
     from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
     import multiprocessing
@@ -146,7 +148,8 @@ def runBacktest(strategyClass, underlying, data, port, send_to_ui, send_to_teleg
         with open('cred.yml') as f:
             creds = yaml.load(f, Loader=yaml.FullLoader)
             telegramBot = TelegramBot(
-                creds['Telegram']['token'], creds['Telegram']['chatid'], creds['Telegram']['allow'] if 'allow' in creds['Telegram'] else [])
+                creds['Telegram']['token'], creds['Telegram']['chatid'],
+                creds['Telegram']['allow'] if 'allow' in creds['Telegram'] else [])
     else:
         telegramBot = None
 
@@ -204,7 +207,7 @@ def runBacktest(strategyClass, underlying, data, port, send_to_ui, send_to_teleg
 
     print("")
     print(
-        f"Time took in running the strategy <{datetime.datetime.now()-start}>")
+        f"Time took in running the strategy <{datetime.datetime.now() - start}>")
 
     tradesDf.sort_values(by=['Entry Date/Time'])
     tradesDf.to_csv(f'results/{strategyClass.__name__}_backtest.csv', mode='a',
@@ -218,16 +221,22 @@ def runBacktest(strategyClass, underlying, data, port, send_to_ui, send_to_teleg
 
 @cli.command(name='trade')
 @click.option('--broker', prompt='Select a broker', type=click.Choice(['Finvasia', 'Zerodha']), help='Select a broker')
-@click.option('--mode', prompt='Select a trading mode', type=click.Choice(['paper', 'live']), help='Select a trading mode')
+@click.option('--mode', prompt='Select a trading mode', type=click.Choice(['paper', 'live']),
+              help='Select a trading mode')
 @click.option('--underlying', multiple=True, help='Specify an underlying')
-@click.option('--collect-data', help='Specify if the data needs to be collected to data.csv', default=False, type=click.BOOL)
+@click.option('--collect-data', help='Specify if the data needs to be collected to data.csv', default=False,
+              type=click.BOOL)
 @click.option('--port', help='Specify a zeroMQ port to send data to', default=5680, type=click.INT)
 @click.option('--send-to-ui', help='Specify if data needs to be sent to UI', default=False, type=click.BOOL)
-@click.option('--send-to-telegram', help='Specify if messages needs to be sent to telegram', default=False, type=click.BOOL)
-@click.option('--register-options', help='Specify which expiry options to register. Allowed values are Weekly, NextWeekly, Monthly', default=["Weekly"], type=click.STRING, multiple=True)
+@click.option('--send-to-telegram', help='Specify if messages needs to be sent to telegram', default=False,
+              type=click.BOOL)
+@click.option('--register-options',
+              help='Specify which expiry options to register. Allowed values are Weekly, NextWeekly, Monthly',
+              default=["Weekly"], type=click.STRING, multiple=True)
 @click.option('--send-logs', help='Specify if logs needs to be sent to papertrail', default=False, type=click.BOOL)
 @click.pass_obj
-def runLiveTrade(strategyClass, broker, mode, underlying, collect_data, port, send_to_ui, send_to_telegram, register_options, send_logs):
+def runLiveTrade(strategyClass, broker, mode, underlying, collect_data, port, send_to_ui, send_to_telegram,
+                 register_options, send_logs):
     if not broker:
         raise click.UsageError('Please select a broker')
 
@@ -242,7 +251,8 @@ def runLiveTrade(strategyClass, broker, mode, underlying, collect_data, port, se
     import datetime
     import os
 
-    click.echo(f'broker <{broker}> mode <{mode}> underlying <{underlying}> collect-data <{collect_data}> port <{port}> send-to-ui <{send_to_ui}> send-to-telegram <{send_to_telegram}> register-options <{register_options}> send-logs <{send_logs}>')
+    click.echo(
+        f'broker <{broker}> mode <{mode}> underlying <{underlying}> collect-data <{collect_data}> port <{port}> send-to-ui <{send_to_ui}> send-to-telegram <{send_to_telegram}> register-options <{register_options}> send-logs <{send_logs}>')
 
     underlyings = list(underlying)
 
@@ -261,99 +271,28 @@ def runLiveTrade(strategyClass, broker, mode, underlying, collect_data, port, se
 
         class ContextFilter(logging.Filter):
             hostname = socket.gethostname()
+
             def filter(self, record):
                 record.hostname = ContextFilter.hostname
                 return True
-            
+
         syslog = SysLogHandler(address=(papertrailCreds[0], int(papertrailCreds[1])))
         syslog.addFilter(ContextFilter())
-        format = '%(asctime)s %(hostname)s PyAlgoMate: %(message)s'
-        formatter = logging.Formatter(format, datefmt='%b %d %H:%M:%S')
+        _format = '%(asctime)s %(hostname)s PyAlgoMate: %(message)s'
+        formatter = logging.Formatter(_format, datefmt='%b %d %H:%M:%S')
         syslog.setFormatter(formatter)
         logger = logging.getLogger()
         logger.addHandler(syslog)
         logger.setLevel(logging.INFO)
 
+    optionSymbols = []
+
     if broker == 'Finvasia':
-        from NorenRestApiPy.NorenApi import NorenApi as ShoonyaApi
-        from pyalgomate.brokers.finvasia.broker import PaperTradingBroker, LiveBroker, getFinvasiaToken, getFinvasiaTokenMappings
         import pyalgomate.brokers.finvasia as finvasia
-        from pyalgomate.brokers.finvasia.feed import LiveTradeFeed
+        from pyalgomate.brokers import getBroker
 
-        cred = creds[broker]
-
-        api = ShoonyaApi(host='https://api.shoonya.com/NorenWClientTP/',
-                         websocket='wss://api.shoonya.com/NorenWSTP/')
-        userToken = None
-        tokenFile = 'shoonyakey.txt'
-        if os.path.exists(tokenFile) and (datetime.datetime.fromtimestamp(os.path.getmtime(tokenFile)).date() == datetime.datetime.today().date()):
-            click.echo(f"Token has been created today already. Re-using it")
-            with open(tokenFile, 'r') as f:
-                userToken = f.read()
-            click.echo(
-                f"userid {cred['user']} password ******** usertoken {userToken}")
-            loginStatus = api.set_session(
-                userid=cred['user'], password=cred['pwd'], usertoken=userToken)
-        else:
-            click.echo(f"Logging in and persisting user token")
-            loginStatus = api.login(userid=cred['user'], password=cred['pwd'], twoFA=pyotp.TOTP(cred['factor2']).now(),
-                                    vendor_code=cred['vc'], api_secret=cred['apikey'], imei=cred['imei'])
-
-            if loginStatus:
-                with open(tokenFile, 'w') as f:
-                    f.write(loginStatus.get('susertoken'))
-
-                click.echo(
-                    f"{loginStatus.get('uname')}={loginStatus.get('stat')} token={loginStatus.get('susertoken')}")
-            else:
-                click.echo(f'Login failed!')
-
-        if loginStatus != None:
-            if len(underlyings) == 0:
-                underlyings = ['NSE|NIFTY BANK']
-
-            optionSymbols = []
-
-            for underlying in underlyings:                
-                underlyingToken = getFinvasiaToken(api, underlying)
-                underlyingQuotes = api.get_quotes('NSE', underlyingToken)
-                ltp = underlyingQuotes['lp']
-
-                underlyingDetails = finvasia.broker.getUnderlyingDetails(
-                    underlying)
-                index = underlyingDetails['index']
-                strikeDifference = underlyingDetails['strikeDifference']
-
-                currentWeeklyExpiry = utils.getNearestWeeklyExpiryDate(
-                    datetime.datetime.now().date(), index)
-                nextWeekExpiry = utils.getNextWeeklyExpiryDate(
-                    datetime.datetime.now().date(), index)
-                monthlyExpiry = utils.getNearestMonthlyExpiryDate(
-                    datetime.datetime.now().date(), index)
-
-                if "Weekly" in register_options:
-                    optionSymbols += finvasia.broker.getOptionSymbols(
-                        underlying, currentWeeklyExpiry, ltp, 10, strikeDifference)
-                if "NextWeekly" in register_options:
-                    optionSymbols += finvasia.broker.getOptionSymbols(
-                        underlying, nextWeekExpiry, ltp, 10, strikeDifference)
-                if "Monthly" in register_options:
-                    optionSymbols += finvasia.broker.getOptionSymbols(
-                        underlying, monthlyExpiry, ltp, 10, strikeDifference)
-
-            optionSymbols = list(dict.fromkeys(optionSymbols))
-
-            tokenMappings = getFinvasiaTokenMappings(
-                api, underlyings + optionSymbols)
-
-            barFeed = LiveTradeFeed(api, tokenMappings)
-
-            if mode == 'paper':
-                broker = PaperTradingBroker(200000, barFeed)
-            else:
-                broker = LiveBroker(api)
-        else:
-            exit(1)
+        barFeed, api = finvasia.getFeed(creds[broker], register_options, underlyings)
+        broker = getBroker(barFeed, api, broker, mode)
     elif broker == 'Zerodha':
         from pyalgomate.brokers.zerodha.kiteext import KiteExt
         import pyalgomate.brokers.zerodha as zerodha
@@ -380,8 +319,6 @@ def runLiveTrade(strategyClass, broker, mode, underlying, collect_data, port, se
 
         if len(underlyings) == 0:
             underlyings = ['NSE:NIFTY BANK']
-
-        optionSymbols = []
 
         for underlying in underlyings:
             ltp = api.quote(underlying)[
@@ -412,7 +349,8 @@ def runLiveTrade(strategyClass, broker, mode, underlying, collect_data, port, se
     telegramBot = None
     if send_to_telegram and 'Telegram' in creds:
         telegramBot = TelegramBot(
-            creds['Telegram']['token'], creds['Telegram']['chatid'], creds['Telegram']['allow'] if 'allow' in creds['Telegram'] else [])
+            creds['Telegram']['token'], creds['Telegram']['chatid'],
+            creds['Telegram']['allow'] if 'allow' in creds['Telegram'] else [])
 
     constructorArgs = inspect.signature(strategyClass.__init__).parameters
     argNames = [param for param in constructorArgs]
@@ -440,11 +378,25 @@ def runLiveTrade(strategyClass, broker, mode, underlying, collect_data, port, se
 
 
 def CliMain(cls):
-    # Remove all handlers associated with the root logger object.
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
 
-    logging.basicConfig(filename=f'{cls.__name__}.log', level=logging.INFO)
+    formatter = logging.Formatter(
+        "[%(levelname)s]|[%(asctime)s]|[%(process)d::%(thread)d]|[%(name)s::%(module)s::%(funcName)s::%(lineno)d]|=> "
+        "%(message)s"
+    )
+
+    fileHandler = logging.FileHandler('PyAlgoMate.log')
+    fileHandler.setLevel(logging.INFO)
+    fileHandler.setFormatter(formatter)
+
+    consoleHandler = logging.StreamHandler()
+    consoleHandler.setLevel(logging.INFO)
+    consoleHandler.setFormatter(formatter)
+
+    logger.addHandler(fileHandler)
+    logger.addHandler(consoleHandler)
+
     logging.getLogger("requests").setLevel(logging.WARNING)
 
     try:

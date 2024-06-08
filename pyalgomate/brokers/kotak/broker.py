@@ -23,7 +23,7 @@ logger.propagate = False
 underlyingMapping = {
     'MIDCPNIFTY': {
         'optionPrefix': 'MIDCPNIFTY',
-        'index': UnderlyingIndex.MIDCAPNIFTY,
+        'index': UnderlyingIndex.MIDCPNIFTY,
         'lotSize': 75,
         'strikeDifference': 25
     },
@@ -36,7 +36,7 @@ underlyingMapping = {
     'NIFTY': {
         'optionPrefix': 'NIFTY',
         'index': UnderlyingIndex.NIFTY,
-        'lotSize': 50,
+        'lotSize': 25,
         'strikeDifference': 50
     },
     'FINNIFTY': {

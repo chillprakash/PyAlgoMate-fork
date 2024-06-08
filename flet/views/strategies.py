@@ -1,13 +1,11 @@
 import base64
-import logging
 import json
-from flet_core.control import OptionalNumber
-from flet_core.ref import Ref
-from flet_core.types import ResponsiveNumber
 import pandas as pd
+import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
 import flet as ft
-from typing import Any, List, Optional, Union
-
+from typing import List
 from pyalgomate.strategies.BaseOptionsGreeksStrategy import BaseOptionsGreeksStrategy
 from pyalgomate.barfeed import BaseBarFeed
 from pyalgomate.core import State
@@ -54,9 +52,8 @@ class StrategyCard(ft.Card):
             on_dismiss=lambda e: print("Modal dialog dismissed!"),
         )
 
-        self.content = ft.Row(
-            height=100,
-            controls=[
+        self.content = ft.ResponsiveRow(
+            [
                 ft.Container(
                     ft.Column(
                         [
@@ -75,8 +72,9 @@ class StrategyCard(ft.Card):
                                 spacing=10),
                             ft.Row(
                                 [
-                                    self.openPositions,
-                                    self.closedPositions
+                                    ft.Column(
+                                        [self.openPositions, self.closedPositions]
+                                    )
                                 ],
                             ),
                             ft.Row(
@@ -87,8 +85,8 @@ class StrategyCard(ft.Card):
                         ],
                         alignment=ft.MainAxisAlignment.CENTER
                     ),
-                    expand=1,
-                    padding=ft.padding.only(left=50)
+                    margin=ft.margin.only(top=20, bottom=20, left=20),
+                    col={"sm": 12, "md": 2},
                 ),
                 ft.Container(
                     ft.Column(
@@ -96,7 +94,8 @@ class StrategyCard(ft.Card):
                         alignment=ft.MainAxisAlignment.CENTER,
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER
                     ),
-                    expand=1
+                    #expand=2
+                    col={"sm": 12, "md": 2},
                 ),
                 ft.Container(
                     ft.Column(
@@ -104,19 +103,20 @@ class StrategyCard(ft.Card):
                         alignment=ft.MainAxisAlignment.CENTER,
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER
                     ),
-                    expand=1
+                    col={"sm": 12, "md": 2},
                 ),
                 ft.Container(
                     ft.Column([ft.ElevatedButton(
                         text='Trades',
                         color='white',
-                        bgcolor='#263F6A'
+                        bgcolor='#263F6A',
+                        on_click=lambda _: self.page.go("/trades", strategyName=self.strategy.strategyName)
                     )],
                         alignment=ft.MainAxisAlignment.CENTER,
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         expand=1
                     ),
-                    expand=1
+                    col={"sm": 12, "md": 2},
                 ),
                 ft.Container(
                     ft.Column([ft.IconButton(
@@ -129,7 +129,7 @@ class StrategyCard(ft.Card):
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         expand=1
                     ),
-                    expand=0.5
+                    col={"sm": 12, "md": 1},
                 ),
                 ft.Container(
                     ft.Column([ft.IconButton(
@@ -142,7 +142,7 @@ class StrategyCard(ft.Card):
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         expand=1
                     ),
-                    expand=0.5
+                    col={"sm": 12, "md": 1},
                 ),
                 ft.Container(
                     ft.Column([
@@ -153,7 +153,7 @@ class StrategyCard(ft.Card):
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         expand=1
                     ),
-                    expand=1
+                    col={"sm": 12, "md": 2},
                 )
             ]
         )
@@ -163,10 +163,12 @@ class StrategyCard(ft.Card):
         pnl = self.strategy.getOverallPnL()
         self.pnlText.value = f'₹ {pnl:.2f}'
         self.pnlText.color = "green" if pnl >= 0 else "red"
-        self.openPositions.value = f'Open Pos: {len(self.strategy.openPositions)}'
-        self.closedPositions.value = f'Closed Pos: {len(self.strategy.closedPositions)}'
+        activeBuyPositions = len([pos for pos in self.strategy.getActivePositions() if pos.getEntryOrder() and pos.getEntryOrder().isBuy()])
+        activeSellPositions = len([pos for pos in self.strategy.getActivePositions() if pos.getEntryOrder() and (not pos.getEntryOrder().isBuy())])
+        self.openPositions.value = f'Open Pos (B|S): {len(self.strategy.getActivePositions())} ({activeBuyPositions}|{activeSellPositions})'
+        self.closedPositions.value = f'Closed Pos: {len(self.strategy.getClosedPositions())}'
         self.balanceAvailable.value = f'Balance Available: ₹ {self.strategy.getBroker().getCash()}'
-        self.update()
+        self.page.update()
 
     def onChartButtonClicked(self, e):
         base64Img = base64.b64encode(
@@ -245,70 +247,134 @@ class StrategyCard(ft.Card):
         self.page.update()
 
 
-class StrategiesContainer(ft.Container):
+class StrategiesView(ft.View):
     def __init__(self, page: ft.Page, feed: BaseBarFeed, strategies: List[BaseOptionsGreeksStrategy]):
         super().__init__()
-        self.padding = ft.padding.only(top=20)
-        self.strategies = strategies
+        self.route = "/"
+        self.padding = ft.padding.all(10)
+        self.scroll = ft.ScrollMode.HIDDEN
         self.page = page
+        self.strategies = strategies
         self.feed = feed
 
         self.totalMtm = ft.Text(
             '₹ 0', size=25)
 
-        self.feedIcon = ft.Icon(name=ft.icons.CIRCLE_ROUNDED)
-        self.feedText = ft.Text(
-            'Last Updated Timestamp: ', size=10, italic=True)
-        feedRow = ft.Container(
-            ft.Container(
-                ft.Column(
-                    [
-                        ft.Container(ft.Row([
-                            ft.Text('Feed', size=15, weight='w700'),
-                            self.feedIcon,
-                        ])),
-                        self.feedText
-                    ],
-                ),
-                padding=ft.padding.all(20),
-                width=250,
-                bgcolor='white54',
-                border_radius=10,
-            ),
-            alignment=ft.alignment.top_right,
-        )
         totalMtmRow = ft.Container(
             ft.Column([
                 ft.Container(ft.Text('Total MTM', size=15, weight=ft.FontWeight.BOLD,
                              color='white'), padding=ft.padding.only(top=10, left=10)),
                 ft.Container(self.totalMtm, padding=ft.padding.only(left=10)),
+                ft.Column([
+                            ft.Divider(color='white')
+                ]),
                 ft.Container(
-                    ft.Column([
-                        ft.Divider(color='white'),
-                        ft.Text('MTM Graph  -->', size=15,
+                    ft.Row([
+                        ft.Column([
+                            ft.Text('Total MTM Graph ->', size=15,
                                 weight=ft.FontWeight.W_400, color='white')
+                        ]),
+                        ft.Column([
+                            ft.IconButton(icon=ft.icons.INSERT_CHART_ROUNDED,
+                                      icon_size=40,
+                                      icon_color='white',
+                                      on_click=self.onTotalMTMChartButtonClicked,tooltip="MTM of all Strategies running")
+                        ])
                     ]),
                     padding=ft.padding.only(
-                        top=35, left=10, right=10, bottom=10)
+                        top=35, right=10, bottom=10)
                 )
             ]),
-            width=200,
-            height=200,
+            col={"sm": 6, "md": 2},
             bgcolor='#263F6A',
-            border_radius=10
+            border_radius=10,
+            height=200,
+        )
+
+        self.feedIcon = ft.Icon(name=ft.icons.CIRCLE_ROUNDED)
+        self.feedText = ft.Text(
+            'Timestamps', size=10, italic=True)
+        feedRow = ft.Container(
+            ft.Container(
+                ft.Column(
+                    [
+                        ft.Row([
+                            ft.Text('Feed', size=15, weight='w700'),
+                            self.feedIcon,
+                        ]),
+                        self.feedText
+                    ],
+                ),
+                padding=ft.padding.only(
+                    top=35, left=20, right=20, bottom=20),
+            ),
+            col={"sm": 6, "md": 2},
+            bgcolor='#ecf0f1',
+            border_radius=10,
+            height=200,
+            alignment=ft.alignment.center,
         )
 
         self.strategyCards = [StrategyCard(
             strategy, page) for strategy in self.strategies]
-        rows = [feedRow, totalMtmRow]
+        rows = [
+            ft.ResponsiveRow([
+                    totalMtmRow, feedRow
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN
+            )
+        ]
         rows.append(ft.ListView([ft.Row([strategyCard])
                     for strategyCard in self.strategyCards]))
-        self.content = ft.Column(
-            rows,
-            scroll=ft.ScrollMode.HIDDEN
+        self.controls = [
+            ft.AppBar(title=ft.Text("Strategies"), bgcolor=ft.colors.SURFACE_VARIANT),
+            ft.Column(
+                rows,
+                scroll=ft.ScrollMode.HIDDEN
+            )
+        ]
+        self.page.update()
+
+    def onTotalMTMChartButtonClicked(self, e):
+        pnlDf = pd.DataFrame()
+        pnl = int(0)
+        for strategyCard in self.strategyCards:
+            strategy = strategyCard.strategy
+            pnl = pnl + strategy.getOverallPnL()
+            tempPnlDf = strategy.getPnLs()
+            tempPnlDf['strategy'] = strategyCard.strategy.strategyName
+            pnlDf = pd.concat([pnlDf, tempPnlDf], ignore_index=True)
+
+        pnlDf.index =pnlDf['Date/Time']
+        cummPnlDf = pnlDf['PnL'].resample('1T').agg({'PnL':'sum'})
+        cummPnlDf.reset_index(inplace=True)
+
+        values = pd.to_numeric(cummPnlDf['PnL'])
+        color = np.where(values < 0, 'loss', 'profit')
+        fig = px.area(cummPnlDf, x="Date/Time", y=values, title=f"Total MTM | Current PnL:  ₹{round(pnl, 2)}",
+                        color=color, color_discrete_map={'loss': 'orangered', 'profit': 'lightgreen'})
+        fig.add_traces(
+            [
+                go.Scatter(x=pnlDf.query(f'strategy=="{strategy}"')["Date/Time"], y=pnlDf.query(f'strategy=="{strategy}"')['PnL'],
+                                mode='lines',
+                                name=f'{strategy}') for strategy in pnlDf.strategy.unique()
+            ]
         )
 
-    def updateStrategies(self):
+        fig.update_layout(
+            title_x=0.5, title_xanchor='center', yaxis_title='PnL')
+        base64Img = base64.b64encode(
+             fig.to_image(format='png')).decode('utf-8')
+        dlg = ft.AlertDialog(
+            content=ft.Container(
+                ft.Image(src_base64=base64Img)
+            )
+        )
+        self.page.dialog = dlg
+        dlg.open = True
+        self.page.update()
+
+    def update(self):
         for strategyCard in self.strategyCards:
             strategyCard.updateStrategy()
 
@@ -317,38 +383,7 @@ class StrategiesContainer(ft.Container):
         self.totalMtm.value = f'₹ {totalMtm:.2f}'
         self.totalMtm.color = "green" if totalMtm >= 0 else "red"
         self.feedIcon.color = "green" if self.feed.isDataFeedAlive() else "red"
-        self.feedText.value = f'Last Updated Timestamp: {self.feed.getLastUpdatedDateTime()}'
-        self.update()
-
-
-class CallbackHandler(logging.Handler):
-    def __init__(self, callback):
-        super(CallbackHandler, self).__init__()
-        self.callback = callback
-
-    def emit(self, record):
-        log_message = self.format(record)
-        self.callback(log_message)
-
-
-class LoggingControl(ft.UserControl):
-    def __init__(self, logger):
-        super().__init__()
-        logger.addHandler(CallbackHandler(self.logCallback))
-        self.list = ft.ListView(expand=True, spacing=0, auto_scroll=True)
-        self.canUpdate = False
-
-    def setCanUpdate(self):
-        self.canUpdate = True
-
-    def logCallback(self, message):
-        self.list.controls.append(ft.Text(message,
-                                  color=ft.colors.WHITE,
-                                  selectable=True,
-                                  font_family="Consolas"))
-
-        if self.canUpdate:
-            self.update()
-
-    def build(self):
-        return ft.Container(self.list, expand=True, bgcolor='black')
+        self.feedText.value = (f'Quote       : {self.feed.getLastUpdatedDateTime()}\nReceived  : '
+                               f'{self.feed.getLastReceivedDateTime()}\nBars        '
+                               f': {self.feed.getNextBarsDateTime()}')
+        self.page.update()

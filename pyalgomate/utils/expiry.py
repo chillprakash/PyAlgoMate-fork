@@ -42,6 +42,7 @@ listOfNseHolidays = set([
     pendulum.Date(2024, 4, 11),  # Eid-Ul-Fitr (Ramzan Eid)
     pendulum.Date(2024, 4, 17),  # Ram Navami
     pendulum.Date(2024, 5, 1),  # Maharashtra Day
+    pendulum.Date(2024, 5, 20),  # Election day
     pendulum.Date(2024, 6, 17),  # Bakri Eid
     pendulum.Date(2024, 7, 17),  # Moharram
     pendulum.Date(2024, 8, 15),  # Independence Day
@@ -61,9 +62,13 @@ expiryDays = {
         (datetime.date(1900, 1, 1), datetime.date(2023, 9, 2)): {
             "weekly": pendulum.THURSDAY
         },
-        (datetime.date(2023, 9, 2), datetime.date(2100, 1, 1)): {
+        (datetime.date(2023, 9, 2), datetime.date(2024, 3, 18)): {
             "weekly": pendulum.WEDNESDAY,
             "monthly": pendulum.THURSDAY
+        },
+        (datetime.date(2024, 3, 18), datetime.date(2100, 1, 1)): {
+            "weekly": pendulum.WEDNESDAY,
+            "monthly": pendulum.WEDNESDAY
         }
     },
     UnderlyingIndex.FINNIFTY: {
@@ -71,7 +76,7 @@ expiryDays = {
             "weekly": pendulum.TUESDAY
         }
     },
-    UnderlyingIndex.MIDCAPNIFTY: {
+    UnderlyingIndex.MIDCPNIFTY: {
         (datetime.date(1900, 1, 1), datetime.date(2100, 1, 1)): {
             "weekly": pendulum.MONDAY
         }
@@ -81,6 +86,11 @@ expiryDays = {
             "weekly": pendulum.FRIDAY
         }
     },
+    UnderlyingIndex.BANKEX: {
+        (datetime.date(1900, 1, 1), datetime.date(2100, 1, 1)): {
+            "weekly": pendulum.MONDAY
+        }
+    }
 }
 
 
@@ -112,7 +122,7 @@ def __considerHolidayList(expiryDate: pendulum.Date) -> datetime.date:
 
 
 def __isSameWeek(date1: datetime.date, date2: datetime.date):
-    return pendulum.date(date1.year, date1.month, date1.day).week_of_month == pendulum.date(date2.year, date2.month, date2.day).week_of_month
+    return date1.month == date2.month and pendulum.date(date1.year, date1.month, date1.day).week_of_month == pendulum.date(date2.year, date2.month, date2.day).week_of_month
 
 
 def getNearestWeeklyExpiryDate(date: datetime.date = None, index: UnderlyingIndex = UnderlyingIndex.BANKNIFTY):
@@ -190,11 +200,11 @@ if __name__ == '__main__':
           f"Nearest Monthly expiry is\t{getNearestMonthlyExpiryDate(pendulum.now().date())}\n"
           f"Next Month expiry is\t\t{getNextMonthlyExpiryDate(pendulum.now().date())}")
     print()
-    print(f"MIDCAPNIFTY\n"
-          f"Nearest Weekly expiry is\t{getNearestWeeklyExpiryDate(pendulum.now().date(), UnderlyingIndex.MIDCAPNIFTY)}\n"
-          f"Next Weekly expiry is\t\t{getNextWeeklyExpiryDate(pendulum.now().date(), UnderlyingIndex.MIDCAPNIFTY)}\n"
-          f"Nearest Monthly expiry is\t{getNearestMonthlyExpiryDate(pendulum.now().date(), UnderlyingIndex.MIDCAPNIFTY)}\n"
-          f"Next Month expiry is\t\t{getNextMonthlyExpiryDate(pendulum.now().date(), UnderlyingIndex.MIDCAPNIFTY)}")
+    print(f"MIDCPNIFTY\n"
+          f"Nearest Weekly expiry is\t{getNearestWeeklyExpiryDate(pendulum.now().date(), UnderlyingIndex.MIDCPNIFTY)}\n"
+          f"Next Weekly expiry is\t\t{getNextWeeklyExpiryDate(pendulum.now().date(), UnderlyingIndex.MIDCPNIFTY)}\n"
+          f"Nearest Monthly expiry is\t{getNearestMonthlyExpiryDate(pendulum.now().date(), UnderlyingIndex.MIDCPNIFTY)}\n"
+          f"Next Month expiry is\t\t{getNextMonthlyExpiryDate(pendulum.now().date(), UnderlyingIndex.MIDCPNIFTY)}")
     print()
     print(f"FINNIFTY\n"
           f"Nearest Weekly expiry is\t{getNearestWeeklyExpiryDate(pendulum.now().date(), UnderlyingIndex.FINNIFTY)}\n"
@@ -207,4 +217,10 @@ if __name__ == '__main__':
           f"Next Weekly expiry is\t\t{getNextWeeklyExpiryDate(pendulum.now().date(), UnderlyingIndex.SENSEX)}\n"
           f"Nearest Monthly expiry is\t{getNearestMonthlyExpiryDate(pendulum.now().date(), UnderlyingIndex.SENSEX)}\n"
           f"Next Month expiry is\t\t{getNextMonthlyExpiryDate(pendulum.now().date(), UnderlyingIndex.SENSEX)}")
+    print()
+    print(f"BANKEX\n"
+          f"Nearest Weekly expiry is\t{getNearestWeeklyExpiryDate(pendulum.now().date(), UnderlyingIndex.BANKEX)}\n"
+          f"Next Weekly expiry is\t\t{getNextWeeklyExpiryDate(pendulum.now().date(), UnderlyingIndex.BANKEX)}\n"
+          f"Nearest Monthly expiry is\t{getNearestMonthlyExpiryDate(pendulum.now().date(), UnderlyingIndex.BANKEX)}\n"
+          f"Next Month expiry is\t\t{getNextMonthlyExpiryDate(pendulum.now().date(), UnderlyingIndex.BANKEX)}")
     print()

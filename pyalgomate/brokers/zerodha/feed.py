@@ -6,6 +6,7 @@ import datetime
 import logging
 import six
 import queue
+import traceback
 
 from .kiteext import KiteExt
 
@@ -75,8 +76,8 @@ class TradeBar(bar.Bar):
     def isSell(self):
         return not self.__trade.isBuy()
 
-class ZerodhaLiveFeed(BaseBarFeed):
 
+class ZerodhaLiveFeed(BaseBarFeed):
     """A real-time BarFeed that builds bars from live trades.
 
     :param instruments: A list of currency pairs.
@@ -108,6 +109,8 @@ class ZerodhaLiveFeed(BaseBarFeed):
         self.__stopped = False
         self.__orderBookUpdateEvent = observer.Event()
         self.__lastDataTime = None
+        self.__nextBarsTime = None
+        self.__lastUpdateTime = None
 
     def getApi(self):
         return self.__api
@@ -185,7 +188,9 @@ class ZerodhaLiveFeed(BaseBarFeed):
     def getNextBars(self):
         if self.__tradeBars.qsize() > 0:
             return bar.Bars(self.__tradeBars.get())
-
+        lastQuoteDateTime = self.__thread.getWsClient().getLastQuoteDateTime()
+        self.__nextBarsTime = datetime.datetime.now()
+        self.__lastUpdateTime = lastQuoteDateTime
         return None
 
     def peekDateTime(self):
@@ -197,21 +202,26 @@ class ZerodhaLiveFeed(BaseBarFeed):
         if self.__thread is not None:
             logger.info("Already running!")
             return
-        
+
         super(ZerodhaLiveFeed, self).start()
         if not self.__initializeClient():
             self.__stopped = True
             raise Exception("Initialization failed")
 
     def dispatch(self):
-        # Note that we may return True even if we didn't dispatch any Bar
-        # event.
-        ret = False
-        if self.__dispatchImpl(None):
-            ret = True
-        if super(ZerodhaLiveFeed, self).dispatch():
-            ret = True
-        return ret
+        try:
+            # Note that we may return True even if we didn't dispatch any Bar
+            # event.
+            ret = False
+            if self.__dispatchImpl(None):
+                ret = True
+            if super(ZerodhaLiveFeed, self).dispatch():
+                ret = True
+            return ret
+        except Exception as e:
+            logger.error(
+                f'Exception: {e}')
+            logger.exception(traceback.format_exc())
 
     # This should not raise.
     def stop(self):
@@ -246,9 +256,10 @@ class ZerodhaLiveFeed(BaseBarFeed):
         return self.__lastDataTime
 
     def isDataFeedAlive(self, heartBeatInterval=5):
-        if self.__lastDataTime is None:
+
+        if self.__lastUpdateTime is None:
             return False
 
         currentDateTime = datetime.datetime.now()
-        timeSinceLastDateTime = currentDateTime - self.__lastDataTime
+        timeSinceLastDateTime = currentDateTime - self.__lastUpdateTime
         return timeSinceLastDateTime.total_seconds() <= heartBeatInterval

@@ -6,6 +6,7 @@ import datetime
 import re
 import pandas as pd
 import logging
+from typing import List
 
 from pyalgotrade import broker
 from pyalgotrade.broker import fillstrategy
@@ -24,9 +25,9 @@ logger = logging.getLogger()
 # strategy.
 
 underlyingMapping = {
-    'MIDCAPNIFTY': {
-        'optionPrefix': 'MIDCAPNIFTY',
-        'index': UnderlyingIndex.MIDCAPNIFTY,
+    'MIDCPNIFTY': {
+        'optionPrefix': 'MIDCPNIFTY',
+        'index': UnderlyingIndex.MIDCPNIFTY,
         'lotSize': 75,
         'strikeDifference': 25
     },
@@ -139,17 +140,17 @@ class BacktestingBroker(backtesting.Broker):
     def _remapAction(self, action):
         action = {
             broker.Order.Action.BUY_TO_COVER: broker.Order.Action.BUY,
-            broker.Order.Action.BUY:          broker.Order.Action.BUY,
-            broker.Order.Action.SELL_SHORT:   broker.Order.Action.SELL,
-            broker.Order.Action.SELL:         broker.Order.Action.SELL
+            broker.Order.Action.BUY: broker.Order.Action.BUY,
+            broker.Order.Action.SELL_SHORT: broker.Order.Action.SELL,
+            broker.Order.Action.SELL: broker.Order.Action.SELL
         }.get(action, None)
         if action is None:
             raise Exception("Only BUY/SELL orders are supported")
         return action
 
     def createMarketOrder(self, action, instrument, quantity, onClose=False):
-       action = self._remapAction(action)
-       return super(BacktestingBroker, self).createMarketOrder(action, instrument, quantity, onClose)
+        action = self._remapAction(action)
+        return super(BacktestingBroker, self).createMarketOrder(action, instrument, quantity, onClose)
 
     def createLimitOrder(self, action, instrument, limitPrice, quantity):
         action = self._remapAction(action)
@@ -170,148 +171,17 @@ class BacktestingBroker(backtesting.Broker):
         return super(BacktestingBroker, self).createLimitOrder(action, instrument, limitPrice, quantity)
 
 
-def getFeed(creds, broker, registerOptions=['Weekly'], underlyings=['NSE|NIFTY BANK']):
+def getFeed(creds, broker, registerOptions: list =['Weekly'], underlyings: list = ['NSE|NIFTY BANK']):
     if broker == 'Backtest':
         data = pd.read_parquet('strategies/data/2023/banknifty/08.parquet')
-        data = data.query("'2023-08-22' <= `Date/Time` <= '2023-08-25'")
-        return DataFrameFeed(data, tickers=['BANKNIFTY']), None
+        filteredData = data.query("'2023-08-22' <= `Date/Time` <= '2023-08-25'")
+        return DataFrameFeed(data, filteredData, underlyings=['BANKNIFTY']), None
     elif broker == 'Finvasia':
-        from NorenRestApiPy.NorenApi import NorenApi as ShoonyaApi
-        from pyalgomate.brokers.finvasia.broker import PaperTradingBroker, LiveBroker, getFinvasiaToken, getFinvasiaTokenMappings
         import pyalgomate.brokers.finvasia as finvasia
-        from pyalgomate.brokers.finvasia.feed import LiveTradeFeed
-        import pyotp
-
-        cred = creds[broker]
-
-        api = ShoonyaApi(host='https://api.shoonya.com/NorenWClientTP/',
-                         websocket='wss://api.shoonya.com/NorenWSTP/')
-        userToken = None
-        tokenFile = 'shoonyakey.txt'
-        if os.path.exists(tokenFile) and (datetime.datetime.fromtimestamp(os.path.getmtime(tokenFile)).date() == datetime.datetime.today().date()):
-            logger.info(f"Token has been created today already. Re-using it")
-            with open(tokenFile, 'r') as f:
-                userToken = f.read()
-            logger.info(
-                f"userid {cred['user']} password ******** usertoken {userToken}")
-            loginStatus = api.set_session(
-                userid=cred['user'], password=cred['pwd'], usertoken=userToken)
-        else:
-            logger.info(f"Logging in and persisting user token")
-            loginStatus = api.login(userid=cred['user'], password=cred['pwd'], twoFA=pyotp.TOTP(cred['factor2']).now(),
-                                    vendor_code=cred['vc'], api_secret=cred['apikey'], imei=cred['imei'])
-
-            if loginStatus:
-                with open(tokenFile, 'w') as f:
-                    f.write(loginStatus.get('susertoken'))
-
-                logger.info(
-                    f"{loginStatus.get('uname')}={loginStatus.get('stat')} token={loginStatus.get('susertoken')}")
-            else:
-                logger.info(f'Login failed!')
-
-        if loginStatus != None:
-            if len(underlyings) == 0:
-                underlyings = ['NSE|NIFTY BANK']
-
-            optionSymbols = []
-
-            for underlying in underlyings:
-                exchange = underlying.split('|')[0]
-                underlyingToken = getFinvasiaToken(api, underlying)
-                logger.info(
-                    f'Token id for <{underlying}> is <{underlyingToken}>')
-                if underlyingToken is None:
-                    logger.error(
-                        f'Error getting token id for {underlyingToken}')
-                    exit(1)
-                underlyingQuotes = api.get_quotes(exchange, underlyingToken)
-                ltp = underlyingQuotes['lp']
-
-                try:
-                    underlyingDetails = finvasia.broker.getUnderlyingDetails(
-                        underlying)
-                    index = underlyingDetails['index']
-                    strikeDifference = underlyingDetails['strikeDifference']
-
-                    currentWeeklyExpiry = utils.getNearestWeeklyExpiryDate(
-                        datetime.datetime.now().date(), index)
-                    nextWeekExpiry = utils.getNextWeeklyExpiryDate(
-                        datetime.datetime.now().date(), index)
-                    monthlyExpiry = utils.getNearestMonthlyExpiryDate(
-                        datetime.datetime.now().date(), index)
-
-                    if "Weekly" in registerOptions:
-                        optionSymbols += finvasia.broker.getOptionSymbols(
-                            underlying, currentWeeklyExpiry, ltp, 20, strikeDifference)
-                    if "NextWeekly" in registerOptions:
-                        optionSymbols += finvasia.broker.getOptionSymbols(
-                            underlying, nextWeekExpiry, ltp, 20, strikeDifference)
-                    if "Monthly" in registerOptions:
-                        optionSymbols += finvasia.broker.getOptionSymbols(
-                            underlying, monthlyExpiry, ltp, 20, strikeDifference)
-                except Exception as e:
-                    logger.exception(f'Exception: {e}')
-
-            optionSymbols = list(dict.fromkeys(optionSymbols))
-
-            logger.info('Getting token mappings')
-            tokenMappings = getFinvasiaTokenMappings(
-                api, underlyings + optionSymbols)
-
-            logger.info('Creating feed object')
-            barFeed = LiveTradeFeed(api, tokenMappings)
-        else:
-            exit(1)
+        return finvasia.getFeed(creds[broker], registerOptions, underlyings)
     elif broker == 'Zerodha':
-        from pyalgomate.brokers.zerodha.kiteext import KiteExt
         import pyalgomate.brokers.zerodha as zerodha
-        from pyalgomate.brokers.zerodha.broker import getZerodhaTokensList
-        from pyalgomate.brokers.zerodha.feed import ZerodhaLiveFeed
-        from pyalgomate.brokers.zerodha.broker import ZerodhaPaperTradingBroker, ZerodhaLiveBroker
-
-        cred = creds[broker]
-
-        api = KiteExt()
-        twoFA = pyotp.TOTP(cred['factor2']).now()
-        api.login_with_credentials(
-            userid=cred['user'], password=cred['pwd'], twofa=twoFA)
-
-        profile = api.profile()
-        logger.info(f"Welcome {profile.get('user_name')}")
-
-        currentWeeklyExpiry = utils.getNearestWeeklyExpiryDate(
-            datetime.datetime.now().date())
-        nextWeekExpiry = utils.getNextWeeklyExpiryDate(
-            datetime.datetime.now().date())
-        monthlyExpiry = utils.getNearestMonthlyExpiryDate(
-            datetime.datetime.now().date())
-
-        if len(underlyings) == 0:
-            underlyings = ['NSE:NIFTY BANK']
-
-        optionSymbols = []
-
-        for underlying in underlyings:
-            ltp = api.quote(underlying)[
-                underlying]["last_price"]
-
-            if "Weekly" in registerOptions:
-                optionSymbols += zerodha.broker.getOptionSymbols(
-                    underlying, currentWeeklyExpiry, ltp, 10)
-            if "NextWeekly" in registerOptions:
-                optionSymbols += zerodha.broker.getOptionSymbols(
-                    underlying, nextWeekExpiry, ltp, 10)
-            if "Monthly" in registerOptions:
-                optionSymbols += zerodha.broker.getOptionSymbols(
-                    underlying, monthlyExpiry, ltp, 10)
-
-        optionSymbols = list(dict.fromkeys(optionSymbols))
-
-        tokenMappings = getZerodhaTokensList(
-            api, underlyings + optionSymbols)
-
-        barFeed = ZerodhaLiveFeed(api, tokenMappings)
+        return zerodha.getFeed(creds[broker], registerOptions, underlyings)
     elif broker == 'Kotak':
         from neo_api_client import NeoAPI
         import pyalgomate.brokers.kotak as kotak
@@ -335,7 +205,7 @@ def getFeed(creds, broker, registerOptions=['Weekly'], underlyings=['NSE|NIFTY B
         for underlying in underlyings:
             optionSymbols = []
             ret = api.search_scrip('NSE' if underlying !=
-                                   'SENSEX' else 'BSE', underlying)
+                                            'SENSEX' else 'BSE', underlying)
             script = [
                 script for script in ret if script['pSymbolName'] == underlying][0]
             tokId = script['pSymbol']
@@ -382,7 +252,7 @@ def getBroker(feed, api, broker, mode, capital=200000):
         if str(mode).lower() == 'paper':
             brokerInstance = PaperTradingBroker(capital, feed)
         else:
-            brokerInstance = LiveBroker(api)
+            brokerInstance = LiveBroker(api, feed)
     elif str(broker).lower() == 'zerodha':
         from pyalgomate.brokers.zerodha.broker import ZerodhaPaperTradingBroker, ZerodhaLiveBroker
 
@@ -399,3 +269,17 @@ def getBroker(feed, api, broker, mode, capital=200000):
             brokerInstance = LiveBroker(api)
 
     return brokerInstance
+
+def getDefaultUnderlyings() -> List[str]:
+    return ['NSE:NIFTY BANK']
+
+
+def getExpiryDates(index: UnderlyingIndex):
+    currentWeeklyExpiry = utils.getNearestWeeklyExpiryDate(
+        datetime.datetime.now().date(), index)
+    nextWeekExpiry = utils.getNextWeeklyExpiryDate(
+        datetime.datetime.now().date(), index)
+    monthlyExpiry = utils.getNearestMonthlyExpiryDate(
+        datetime.datetime.now().date(), index)
+
+    return currentWeeklyExpiry, nextWeekExpiry, monthlyExpiry

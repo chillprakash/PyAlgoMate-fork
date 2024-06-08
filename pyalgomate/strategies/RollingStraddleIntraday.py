@@ -7,27 +7,29 @@ from pyalgomate.strategies.BaseOptionsGreeksStrategy import BaseOptionsGreeksStr
 from pyalgomate.core import State, Expiry
 from pyalgomate.cli import CliMain
 
+
 class RollingStraddleIntraday(BaseOptionsGreeksStrategy):
-    def __init__(self, feed, broker, underlying=None, strategyName=None, registeredOptionsCount=None, 
-                 callback=None, resampleFrequency=None, lotSize=None, collectData=None, telegramBot=None):
+    def __init__(self, feed, broker, underlying, strategyName=None, telegramBot=None):
         super(RollingStraddleIntraday, self).__init__(feed, broker,
                                                       strategyName=strategyName if strategyName else __class__.__name__,
                                                       logger=logging.getLogger(
                                                           __file__),
-                                                      callback=callback,
-                                                      resampleFrequency=resampleFrequency,
-                                                      collectData=collectData,
                                                       telegramBot=telegramBot)
 
         self.entryTime = datetime.time(hour=9, minute=17)
         self.exitTime = datetime.time(hour=15, minute=25)
         self.expiry = Expiry.WEEKLY
-        self.strikeThreshold = 100
-        self.lotSize = lotSize if lotSize is not None else 25
+
+        self.underlying = underlying
+        underlyingDetails = self.getBroker().getUnderlyingDetails(self.underlying)
+        self.underlyingIndex = underlyingDetails['index']
+        self.strikeDifference = underlyingDetails['strikeDifference']
+        self.lotSize = underlyingDetails['lotSize']
+
         self.lots = 1
         self.quantity = self.lotSize * self.lots
         self.portfolioSL = 4000
-        self.underlying = 'BANKNIFTY' if underlying is None else underlying
+        self.strikeThreshold = self.strikeDifference + 20
 
         self.__reset__()
 
@@ -44,18 +46,17 @@ class RollingStraddleIntraday(BaseOptionsGreeksStrategy):
                 position.exitMarket()
 
     def getATMStrike(self):
-        underlyingLTP = self.getUnderlyingPrice(self.underlying)
+        underlyingLTP = self.getLastPrice(self.underlying)
 
         if underlyingLTP is None:
             return None
 
         inputPrice = int(underlyingLTP)
-        remainder = int(inputPrice % self.strikeThreshold)
-        if remainder < int(self.strikeThreshold / 2):
+        remainder = int(inputPrice % self.strikeDifference)
+        if remainder < int(self.strikeDifference / 2):
             return inputPrice - remainder
         else:
-            return inputPrice + (self.strikeThreshold - remainder)
-        
+            return inputPrice + (self.strikeDifference - remainder)
 
     def takePositions(self, currentExpiry):
         atmStrike = self.getATMStrike()
@@ -107,9 +108,10 @@ class RollingStraddleIntraday(BaseOptionsGreeksStrategy):
         if self.lastAtmStrike is None:
             return False
 
-        underlyingPrice = self.getUnderlyingPrice(self.underlying)
+        underlyingPrice = self.getLastPrice(self.underlying)
 
-        if not ((self.lastAtmStrike - self.strikeThreshold) < underlyingPrice < (self.lastAtmStrike + self.strikeThreshold)):
+        if not ((self.lastAtmStrike - self.strikeThreshold) < underlyingPrice < (
+                self.lastAtmStrike + self.strikeThreshold)):
             atmStrike = self.getATMStrike()
             self.log(
                 f"Underlying price {underlyingPrice} has exceeded strike threshold {self.strikeThreshold}. Current positions are at strike {atmStrike}")
@@ -144,7 +146,8 @@ class RollingStraddleIntraday(BaseOptionsGreeksStrategy):
         self.log(f"Bar date times - {bars.getDateTime()}", logging.DEBUG)
 
         currentExpiry = utils.getNearestWeeklyExpiryDate(bars.getDateTime().date(
-        )) if self.expiry == Expiry.WEEKLY else utils.getNearestMonthlyExpiryDate(bars.getDateTime().date())
+        ), self.underlyingIndex) if self.expiry == Expiry.WEEKLY else utils.getNearestMonthlyExpiryDate(
+            bars.getDateTime().date(), self.underlyingIndex)
 
         if self.state == State.LIVE:
             if bars.getDateTime().time() >= self.entryTime and bars.getDateTime().time() < self.exitTime:
@@ -169,7 +172,7 @@ class RollingStraddleIntraday(BaseOptionsGreeksStrategy):
         self.overallPnL = self.getOverallPnL()
 
         if bars.getDateTime().time() >= self.marketEndTime:
-            if (len(self.openPositions) + len(self.closedPositions)) > 0:
+            if (len(self.getActivePositions()) + len(self.getClosedPositions())) > 0:
                 self.log(
                     f"Overall PnL for {bars.getDateTime().date()} is {self.overallPnL}")
             if self.state != State.LIVE:

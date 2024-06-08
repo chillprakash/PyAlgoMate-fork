@@ -1,0 +1,23 @@
+Broker: Finvasia
+Underlyings:
+  - NSE|NIFTY BANK
+  - NSE|NIFTY INDEX
+  - NSE|FINNIFTY
+  - NSE|MIDCPNIFTY
+  - BSE|SENSEX
+  - BSE|BANKEX
+
+Strategies:
+  SuperTrend1:
+    Class: SuperTrendV1
+    Path: pyalgomate/strategies/SuperTrendV1.py
+    Mode: live
+    Args:
+      - underlying: NSE|NIFTY BANK
+
+  SuperTrendV2:
+    Class: SuperTrendV1
+    Path: pyalgomate/strategies/SuperTrendV1.py
+    Mode: paper
+    Args:
+      - underlying: BSE|BANKEX

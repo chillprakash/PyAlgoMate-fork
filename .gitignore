@@ -1,5 +1,7 @@
 cred.yml
+strategies.yaml
 shoonyakey.txt
+finvasia_symbols.csv
 trades*.csv
 trades*.xlsx
 pyalgomate/backtesting/data/test.parquet
@@ -134,3 +136,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+.idea/
+api-scrip-master.csv
+.DS_Store

@@ -1,16 +1,16 @@
 import abc
 import logging
-
 import six
 
 import pyalgotrade.broker
 from pyalgotrade.broker import backtesting
 from pyalgotrade import observer
 from pyalgotrade import dispatcher
-import pyalgotrade.strategy.position
 from pyalgotrade import logger
-from pyalgotrade.barfeed import resampled
+from pyalgotrade.strategy import position
+
 from pyalgomate.barfeed import BaseBarFeed
+from pyalgomate.core import resampled
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -32,6 +32,7 @@ class BaseStrategy(object):
         self.__barFeed: BaseBarFeed = barFeed
         self.__broker = broker
         self.__activePositions = set()
+        self.__closedPositions = set()
         self.__orderToPosition = {}
         self.__barsProcessedEvent = observer.Event()
         self.__analyzers = []
@@ -52,6 +53,10 @@ class BaseStrategy(object):
         # Initialize logging.
         self.__logger = logger.getLogger(BaseStrategy.LOGGER_NAME)
 
+    def reset(self):
+        self.__activePositions = set()
+        self.__closedPositions = set()
+
     # Only valid for testing purposes.
     def _setBroker(self, broker):
         self.__broker = broker
@@ -67,6 +72,9 @@ class BaseStrategy(object):
 
     def getActivePositions(self):
         return self.__activePositions
+
+    def getClosedPositions(self):
+        return self.__closedPositions
 
     def getOrderToPosition(self):
         return self.__orderToPosition
@@ -85,15 +93,16 @@ class BaseStrategy(object):
 
     def registerPositionOrder(self, position, order):
         self.__activePositions.add(position)
-        assert(order.isActive())  # Why register an inactive order ?
-        self.__orderToPosition[order.getId()] = position
+        assert (order.isActive())  # Why register an inactive order ?
+        self.__orderToPosition[order] = position
 
     def unregisterPositionOrder(self, position, order):
-        del self.__orderToPosition[order.getId()]
+        del self.__orderToPosition[order]
 
     def unregisterPosition(self, position):
-        assert(not position.isOpen())
+        assert (not position.isOpen())
         self.__activePositions.remove(position)
+        self.__closedPositions.add(position)
 
     def __notifyAnalyzers(self, lambdaExpression):
         for s in self.__analyzers:
@@ -129,6 +138,15 @@ class BaseStrategy(object):
         """Returns the :class:`datetime.datetime` for the current :class:`pyalgotrade.bar.Bars`."""
         return self.__barFeed.getCurrentDateTime()
 
+    def isBacktest(self):
+        return self.getBroker().getType().lower() == "backtest"
+
+    def isPaper(self):
+        return self.getBroker().getType().lower() == "paper"
+
+    def isLive(self):
+        return self.getBroker().getType().lower() == "live"
+
     def marketOrder(self, instrument, quantity, onClose=False, goodTillCanceled=False, allOrNone=False):
         """Submits a market order.
 
@@ -149,7 +167,8 @@ class BaseStrategy(object):
         if quantity > 0:
             ret = self.getBroker().createMarketOrder(pyalgotrade.broker.Order.Action.BUY, instrument, quantity, onClose)
         elif quantity < 0:
-            ret = self.getBroker().createMarketOrder(pyalgotrade.broker.Order.Action.SELL, instrument, quantity*-1, onClose)
+            ret = self.getBroker().createMarketOrder(pyalgotrade.broker.Order.Action.SELL, instrument, quantity * -1,
+                                                     onClose)
         if ret:
             ret.setGoodTillCanceled(goodTillCanceled)
             ret.setAllOrNone(allOrNone)
@@ -174,9 +193,11 @@ class BaseStrategy(object):
 
         ret = None
         if quantity > 0:
-            ret = self.getBroker().createLimitOrder(pyalgotrade.broker.Order.Action.BUY, instrument, limitPrice, quantity)
+            ret = self.getBroker().createLimitOrder(pyalgotrade.broker.Order.Action.BUY, instrument, limitPrice,
+                                                    quantity)
         elif quantity < 0:
-            ret = self.getBroker().createLimitOrder(pyalgotrade.broker.Order.Action.SELL, instrument, limitPrice, quantity*-1)
+            ret = self.getBroker().createLimitOrder(pyalgotrade.broker.Order.Action.SELL, instrument, limitPrice,
+                                                    quantity * -1)
         if ret:
             ret.setGoodTillCanceled(goodTillCanceled)
             ret.setAllOrNone(allOrNone)
@@ -203,7 +224,8 @@ class BaseStrategy(object):
         if quantity > 0:
             ret = self.getBroker().createStopOrder(pyalgotrade.broker.Order.Action.BUY, instrument, stopPrice, quantity)
         elif quantity < 0:
-            ret = self.getBroker().createStopOrder(pyalgotrade.broker.Order.Action.SELL, instrument, stopPrice, quantity*-1)
+            ret = self.getBroker().createStopOrder(pyalgotrade.broker.Order.Action.SELL, instrument, stopPrice,
+                                                   quantity * -1)
         if ret:
             ret.setGoodTillCanceled(goodTillCanceled)
             ret.setAllOrNone(allOrNone)
@@ -230,9 +252,11 @@ class BaseStrategy(object):
 
         ret = None
         if quantity > 0:
-            ret = self.getBroker().createStopLimitOrder(pyalgotrade.broker.Order.Action.BUY, instrument, stopPrice, limitPrice, quantity)
+            ret = self.getBroker().createStopLimitOrder(pyalgotrade.broker.Order.Action.BUY, instrument, stopPrice,
+                                                        limitPrice, quantity)
         elif quantity < 0:
-            ret = self.getBroker().createStopLimitOrder(pyalgotrade.broker.Order.Action.SELL, instrument, stopPrice, limitPrice, quantity*-1)
+            ret = self.getBroker().createStopLimitOrder(pyalgotrade.broker.Order.Action.SELL, instrument, stopPrice,
+                                                        limitPrice, quantity * -1)
         if ret:
             ret.setGoodTillCanceled(goodTillCanceled)
             ret.setAllOrNone(allOrNone)
@@ -246,14 +270,16 @@ class BaseStrategy(object):
         :type instrument: string.
         :param quantity: Entry order quantity.
         :type quantity: int.
-        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets automatically canceled when the session closes.
+        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets
+         automatically canceled when the session closes.
         :type goodTillCanceled: boolean.
         :param allOrNone: True if the orders should be completely filled or not at all.
         :type allOrNone: boolean.
-        :rtype: The :class:`pyalgotrade.strategy.position.Position` entered.
+        :rtype: The :class:`position.Position` entered.
         """
 
-        return pyalgotrade.strategy.position.LongPosition(self, instrument, None, None, quantity, goodTillCanceled, allOrNone)
+        return position.LongPosition(self, instrument, None, None, quantity,
+                                     goodTillCanceled, allOrNone)
 
     def enterShort(self, instrument, quantity, goodTillCanceled=False, allOrNone=False):
         """Generates a sell short :class:`pyalgotrade.broker.MarketOrder` to enter a short position.
@@ -262,14 +288,16 @@ class BaseStrategy(object):
         :type instrument: string.
         :param quantity: Entry order quantity.
         :type quantity: int.
-        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets automatically canceled when the session closes.
+        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets
+        automatically canceled when the session closes.
         :type goodTillCanceled: boolean.
         :param allOrNone: True if the orders should be completely filled or not at all.
         :type allOrNone: boolean.
-        :rtype: The :class:`pyalgotrade.strategy.position.Position` entered.
+        :rtype: The :class:`position.Position` entered.
         """
 
-        return pyalgotrade.strategy.position.ShortPosition(self, instrument, None, None, quantity, goodTillCanceled, allOrNone)
+        return position.ShortPosition(self, instrument, None, None, quantity,
+                                      goodTillCanceled, allOrNone)
 
     def enterLongLimit(self, instrument, limitPrice, quantity, goodTillCanceled=False, allOrNone=False):
         """Generates a buy :class:`pyalgotrade.broker.LimitOrder` to enter a long position.
@@ -280,14 +308,16 @@ class BaseStrategy(object):
         :type limitPrice: float.
         :param quantity: Entry order quantity.
         :type quantity: int.
-        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets automatically canceled when the session closes.
+        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets
+        automatically canceled when the session closes.
         :type goodTillCanceled: boolean.
         :param allOrNone: True if the orders should be completely filled or not at all.
         :type allOrNone: boolean.
-        :rtype: The :class:`pyalgotrade.strategy.position.Position` entered.
+        :rtype: The :class:`position.Position` entered.
         """
 
-        return pyalgotrade.strategy.position.LongPosition(self, instrument, None, limitPrice, quantity, goodTillCanceled, allOrNone)
+        return position.LongPosition(self, instrument, None, limitPrice, quantity,
+                                     goodTillCanceled, allOrNone)
 
     def enterShortLimit(self, instrument, limitPrice, quantity, goodTillCanceled=False, allOrNone=False):
         """Generates a sell short :class:`pyalgotrade.broker.LimitOrder` to enter a short position.
@@ -298,14 +328,16 @@ class BaseStrategy(object):
         :type limitPrice: float.
         :param quantity: Entry order quantity.
         :type quantity: int.
-        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets automatically canceled when the session closes.
+        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets
+        automatically canceled when the session closes.
         :type goodTillCanceled: boolean.
         :param allOrNone: True if the orders should be completely filled or not at all.
         :type allOrNone: boolean.
-        :rtype: The :class:`pyalgotrade.strategy.position.Position` entered.
+        :rtype: The :class:`position.Position` entered.
         """
 
-        return pyalgotrade.strategy.position.ShortPosition(self, instrument, None, limitPrice, quantity, goodTillCanceled, allOrNone)
+        return position.ShortPosition(self, instrument, None, limitPrice,
+                                      quantity, goodTillCanceled, allOrNone)
 
     def enterLongStop(self, instrument, stopPrice, quantity, goodTillCanceled=False, allOrNone=False):
         """Generates a buy :class:`pyalgotrade.broker.StopOrder` to enter a long position.
@@ -316,14 +348,16 @@ class BaseStrategy(object):
         :type stopPrice: float.
         :param quantity: Entry order quantity.
         :type quantity: int.
-        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets automatically canceled when the session closes.
+        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets
+        automatically canceled when the session closes.
         :type goodTillCanceled: boolean.
         :param allOrNone: True if the orders should be completely filled or not at all.
         :type allOrNone: boolean.
-        :rtype: The :class:`pyalgotrade.strategy.position.Position` entered.
+        :rtype: The :class:`position.Position` entered.
         """
 
-        return pyalgotrade.strategy.position.LongPosition(self, instrument, stopPrice, None, quantity, goodTillCanceled, allOrNone)
+        return position.LongPosition(self, instrument, stopPrice, None, quantity, goodTillCanceled,
+                                     allOrNone)
 
     def enterShortStop(self, instrument, stopPrice, quantity, goodTillCanceled=False, allOrNone=False):
         """Generates a sell short :class:`pyalgotrade.broker.StopOrder` to enter a short position.
@@ -334,14 +368,16 @@ class BaseStrategy(object):
         :type stopPrice: float.
         :param quantity: Entry order quantity.
         :type quantity: int.
-        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets automatically canceled when the session closes.
+        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets
+        automatically canceled when the session closes.
         :type goodTillCanceled: boolean.
         :param allOrNone: True if the orders should be completely filled or not at all.
         :type allOrNone: boolean.
-        :rtype: The :class:`pyalgotrade.strategy.position.Position` entered.
+        :rtype: The :class:`position.Position` entered.
         """
 
-        return pyalgotrade.strategy.position.ShortPosition(self, instrument, stopPrice, None, quantity, goodTillCanceled, allOrNone)
+        return position.ShortPosition(self, instrument, stopPrice, None, quantity,
+                                      goodTillCanceled, allOrNone)
 
     def enterLongStopLimit(self, instrument, stopPrice, limitPrice, quantity, goodTillCanceled=False, allOrNone=False):
         """Generates a buy :class:`pyalgotrade.broker.StopLimitOrder` order to enter a long position.
@@ -358,10 +394,11 @@ class BaseStrategy(object):
         :type goodTillCanceled: boolean.
         :param allOrNone: True if the orders should be completely filled or not at all.
         :type allOrNone: boolean.
-        :rtype: The :class:`pyalgotrade.strategy.position.Position` entered.
+        :rtype: The :class:`position.Position` entered.
         """
 
-        return pyalgotrade.strategy.position.LongPosition(self, instrument, stopPrice, limitPrice, quantity, goodTillCanceled, allOrNone)
+        return position.LongPosition(self, instrument, stopPrice, limitPrice, quantity,
+                                     goodTillCanceled, allOrNone)
 
     def enterShortStopLimit(self, instrument, stopPrice, limitPrice, quantity, goodTillCanceled=False, allOrNone=False):
         """Generates a sell short :class:`pyalgotrade.broker.StopLimitOrder` order to enter a short position.
@@ -374,52 +411,60 @@ class BaseStrategy(object):
         :type limitPrice: float.
         :param quantity: Entry order quantity.
         :type quantity: int.
-        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets automatically canceled when the session closes.
+        :param goodTillCanceled: True if the entry order is good till canceled. If False then the order gets
+        automatically canceled when the session closes.
         :type goodTillCanceled: boolean.
         :param allOrNone: True if the orders should be completely filled or not at all.
         :type allOrNone: boolean.
-        :rtype: The :class:`pyalgotrade.strategy.position.Position` entered.
+        :rtype: The :class:`position.Position` entered.
         """
 
-        return pyalgotrade.strategy.position.ShortPosition(self, instrument, stopPrice, limitPrice, quantity, goodTillCanceled, allOrNone)
+        return position.ShortPosition(self, instrument, stopPrice, limitPrice, quantity,
+                                      goodTillCanceled, allOrNone)
 
     def onEnterOk(self, position):
-        """Override (optional) to get notified when the order submitted to enter a position was filled. The default implementation is empty.
+        """Override (optional) to get notified when the order submitted to enter a position was filled. The default
+        implementation is empty.
 
         :param position: A position returned by any of the enterLongXXX or enterShortXXX methods.
-        :type position: :class:`pyalgotrade.strategy.position.Position`.
+        :type position: :class:`position.Position`.
         """
         pass
 
     def onEnterCanceled(self, position):
-        """Override (optional) to get notified when the order submitted to enter a position was canceled. The default implementation is empty.
+        """Override (optional) to get notified when the order submitted to enter a position was canceled. The default
+        implementation is empty.
 
         :param position: A position returned by any of the enterLongXXX or enterShortXXX methods.
-        :type position: :class:`pyalgotrade.strategy.position.Position`.
+        :type position: :class:`position.Position`.
         """
         pass
 
     # Called when the exit order for a position was filled.
     def onExitOk(self, position):
-        """Override (optional) to get notified when the order submitted to exit a position was filled. The default implementation is empty.
+        """Override (optional) to get notified when the order submitted to exit a position was filled. The default
+        implementation is empty.
 
         :param position: A position returned by any of the enterLongXXX or enterShortXXX methods.
-        :type position: :class:`pyalgotrade.strategy.position.Position`.
+        :type position: :class:`position.Position`.
         """
         pass
 
     # Called when the exit order for a position was canceled.
     def onExitCanceled(self, position):
-        """Override (optional) to get notified when the order submitted to exit a position was canceled. The default implementation is empty.
+        """Override (optional) to get notified when the order submitted to exit a position was canceled. The default
+        implementation is empty.
 
         :param position: A position returned by any of the enterLongXXX or enterShortXXX methods.
-        :type position: :class:`pyalgotrade.strategy.position.Position`.
+        :type position: :class:`position.Position`.
         """
         pass
 
     """Base class for strategies. """
+
     def onStart(self):
-        """Override (optional) to get notified when the strategy starts executing. The default implementation is empty. """
+        """Override (optional) to get notified when the strategy starts executing. The default implementation is
+        empty."""
         pass
 
     def onFinish(self, bars):
@@ -461,7 +506,7 @@ class BaseStrategy(object):
         # Force a resample check to avoid depending solely on the underlying
         # barfeed events.
         for resampledBarFeed in self.__resampledBarFeeds:
-            resampledBarFeed.checkNow(self.getCurrentDateTime())
+            resampledBarFeed.checkNow(self.getFeed().getNextBarsDateTime())
 
         self.onIdle()
 
@@ -470,7 +515,7 @@ class BaseStrategy(object):
         self.onOrderUpdated(order)
 
         # Notify the position about the order event.
-        pos = self.__orderToPosition.get(order.getId(), None)
+        pos = self.__orderToPosition.get(order, None)
         if pos is not None:
             # Unlink the order from the position if its not active anymore.
             if not order.isActive():
@@ -484,8 +529,14 @@ class BaseStrategy(object):
         # 1: Let analyzers process bars.
         self.__notifyAnalyzers(lambda s: s.beforeOnBars(self, bars))
 
-        # 2: Let the strategy process current bars and submit orders.
-        self.onBars(bars)
+        try:
+            # 2: Let the strategy process current bars and submit orders.
+            self.onBars(bars)
+
+            for resampledBarFeed in self.__resampledBarFeeds:
+                resampledBarFeed.addBars(dateTime, bars)
+        except Exception as e:
+            self.__logger.exception(f'Exception in __onBars. {e}')
 
         # 3: Notify that the bars were processed.
         self.__barsProcessedEvent.emit(self, bars)
@@ -538,9 +589,7 @@ class BaseStrategy(object):
         :param callback: A function similar to onBars that will be called when new bars are available.
         :rtype: :class:`pyalgotrade.barfeed.BaseBarFeed`.
         """
-        ret = resampled.ResampledBarFeed(self.getFeed(), frequency)
-        ret.getNewValuesEvent().subscribe(lambda dt, bars: callback(bars))
-        self.getDispatcher().addSubject(ret)
+        ret = resampled.ResampledBars(self.getFeed(), frequency, callback)
         self.__resampledBarFeeds.append(ret)
         return ret
 

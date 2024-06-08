@@ -10,20 +10,24 @@ import six
 import calendar
 import re
 import pandas as pd
+from typing import ForwardRef, List, Dict
 
 from pyalgotrade import broker
+from pyalgotrade.broker import Order
+from pyalgomate.barfeed import BaseBarFeed
 from pyalgomate.brokers import BacktestingBroker, QuantityTraits
 from pyalgomate.strategies import OptionContract
-from NorenRestApiPy.NorenApi import NorenApi as ShoonyaApi
+from NorenRestApiPy.NorenApi import NorenApi
 from pyalgomate.utils import UnderlyingIndex
 import pyalgomate.utils as utils
+import pyalgomate.brokers.finvasia as finvasia
 
-logger = logging.getLogger(__file__)
+logger = logging.getLogger(__name__)
 
 underlyingMapping = {
-    'NSE|NIFTY MID SELECT': {
+    'NSE|MIDCPNIFTY': {
         'optionPrefix': 'NFO|MIDCPNIFTY',
-        'index': UnderlyingIndex.MIDCAPNIFTY,
+        'index': UnderlyingIndex.MIDCPNIFTY,
         'lotSize': 75,
         'strikeDifference': 25
     },
@@ -36,19 +40,25 @@ underlyingMapping = {
     'NSE|NIFTY INDEX': {
         'optionPrefix': 'NFO|NIFTY',
         'index': UnderlyingIndex.NIFTY,
-        'lotSize': 50,
+        'lotSize': 25,
         'strikeDifference': 50
     },
-    'NSE|FIN NIFTY': {
+    'NSE|FINNIFTY': {
         'optionPrefix': 'NFO|FINNIFTY',
         'index': UnderlyingIndex.FINNIFTY,
         'lotSize': 40,
         'strikeDifference': 50
     },
-    'BSE|BSE SENSEX': {
+    'BSE|SENSEX': {
         'optionPrefix': 'BFO|SENSEX',
         'index': UnderlyingIndex.SENSEX,
         'lotSize': 10,
+        'strikeDifference': 100
+    },
+    'BSE|BANKEX': {
+        'optionPrefix': 'BFO|BANKEX',
+        'index': UnderlyingIndex.BANKEX,
+        'lotSize': 15,
         'strikeDifference': 100
     }
 }
@@ -64,7 +74,7 @@ def getOptionSymbol(underlyingInstrument, expiry, strikePrice, callOrPut):
     optionPrefix = underlyingDetails['optionPrefix']
     index = underlyingDetails['index']
 
-    if index != UnderlyingIndex.SENSEX:
+    if index not in [UnderlyingIndex.SENSEX, UnderlyingIndex.BANKEX]:
         dayMonthYear = f"{expiry.day:02d}" + \
             calendar.month_abbr[expiry.month].upper() + str(expiry.year % 100)
         return optionPrefix + dayMonthYear + callOrPut + str(strikePrice)
@@ -103,43 +113,17 @@ def getOptionSymbols(underlyingInstrument, expiry, ltp, count, strikeDifference=
     logger.info("Options symbols are " + ",".join(optionSymbols))
     return optionSymbols
 
-def getFinvasiaToken(api, exchangeSymbol):
-    splitStrings = exchangeSymbol.split('|')
-    exchange = splitStrings[0]
-    symbol = splitStrings[1]
-    ret = api.searchscrip(exchange=exchange, searchtext=symbol)
-
-    if ret != None:
-        for value in ret['values']:
-            if value['instname'] in ['OPTIDX', 'EQ'] and value['tsym'] == symbol:
-                return value['token']
-            if value['instname'] == 'UNDIND' and value['cname'] == symbol:
-                return value['token']
-            if value['instname'] in ['FUTIDX', 'EQ'] and value['dname'] == symbol:
-                return value['token']
-
-    return None
-
-
-def getFinvasiaTokenMappings(api, exchangeSymbols):
-    tokenMappings = {}
-
-    for exchangeSymbol in exchangeSymbols:
-        tokenMappings["{0}|{1}".format(exchangeSymbol.split(
-            '|')[0], getFinvasiaToken(api, exchangeSymbol))] = exchangeSymbol
-
-    return tokenMappings
-
-
-def getHistoricalData(api, exchangeSymbol: str, startTime: datetime.datetime, interval: str) -> pd.DataFrame():
+def getHistoricalData(api: NorenApi, exchangeSymbol: str, startTime: datetime.datetime, interval: str) -> pd.DataFrame:
     startTime = startTime.replace(hour=0, minute=0, second=0, microsecond=0)
     splitStrings = exchangeSymbol.split('|')
     exchange = splitStrings[0]
+    token=finvasia.getToken(exchangeSymbol)
+    if '|' in token :
+        token = token.split('|')[1]
 
     logger.info(
         f'Retrieving {interval} timeframe historical data for {exchangeSymbol}')
-    ret = api.get_time_price_series(exchange=exchange, token=getFinvasiaToken(
-        api, exchangeSymbol), starttime=startTime.timestamp(), interval=interval)
+    ret = api.get_time_price_series(exchange=exchange, token=token, starttime=startTime.timestamp(), interval=interval)
     if ret != None:
         df = pd.DataFrame(
             ret)[['time', 'into', 'inth', 'intl', 'intc', 'v', 'oi']]
@@ -156,6 +140,14 @@ def getHistoricalData(api, exchangeSymbol: str, startTime: datetime.datetime, in
     else:
         return pd.DataFrame(columns=['Date/Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'Open Interest'])
 
+def getPriceType(orderType):
+    return {
+                # LMT / MKT / SL-LMT / SL-MKT / DS / 2L / 3L
+                broker.Order.Type.MARKET: 'MKT',
+                broker.Order.Type.LIMIT: 'LMT',
+                broker.Order.Type.STOP_LIMIT: 'SL-LMT',
+                broker.Order.Type.STOP: 'SL-MKT'
+            }.get(orderType)
 class PaperTradingBroker(BacktestingBroker):
     """A Finvasia paper trading broker.
     """    
@@ -331,9 +323,15 @@ class PaperTradingBroker(BacktestingBroker):
     # emsg		                    Error message
 
 
-class TradeEvent(object):
+class OrderEvent(object):
     def __init__(self, eventDict):
         self.__eventDict = eventDict
+
+    def getStat(self):
+        return self.__eventDict.get('state', None)
+    
+    def getErrorMessage(self):
+        return self.__eventDict.get('emsg', None)
 
     def getId(self):
         return self.__eventDict.get('norenordno', None)
@@ -353,68 +351,92 @@ class TradeEvent(object):
     def getDateTime(self):
         return datetime.datetime.strptime(self.__eventDict['norentm'], '%H:%M:%S %d-%m-%Y') if self.__eventDict.get('norentm', None) is not None else None
 
-# def getOrderStatus(orderId):
-#     orderBook = api.get_order_book()
-#     for order in orderBook:
-#         if order['norenordno'] == orderId and order['status'] == 'REJECTED':
-#             return item['rejreason']
-#         elif order['norenordno'] == orderId and order['status'] == 'OPEN':
-#             return item['status']
-#         elif order['norenordno'] == orderId and order['status'] == 'COMPLETE':
-#             print(f'{orderId} successfully placed')
-#             return item['status']
-#     print(f'{orderId} not found in the order book')
-#     return None
-
-# def getFillPrice(orderId):
-#     tradeBook = api.get_trade_book()
-#     if tradeBook is None:
-#         print('No order placed for the day')
-#     else:
-#         for trade in tradeBook:
-#             if trade['norenordno'] == orderId:
-#                 return trade['flprc']
-#     return None
-
+LiveBroker = ForwardRef('LiveBroker')
 
 class TradeMonitor(threading.Thread):
-    POLL_FREQUENCY = 2
+    POLL_FREQUENCY = 1
 
-    # Events
+    RETRY_COUNT = 3
+
+    RETRY_INTERVAL = 5
+
     ON_USER_TRADE = 1
 
-    def __init__(self, liveBroker: broker.Broker):
+    def __init__(self, liveBroker: LiveBroker):
         super(TradeMonitor, self).__init__()
-        self.__api = liveBroker.getApi()
-        self.__broker = liveBroker
+        self.__api: NorenApi = liveBroker.getApi()
+        self.__broker: LiveBroker = liveBroker
         self.__queue = six.moves.queue.Queue()
         self.__stop = False
+        self.__retryData = dict()
 
-    def _getNewTrades(self):
-        ret = []
-        activeOrderIds = [order.getId()
-                          for order in self.__broker.getActiveOrders().copy()]
-        for orderId in activeOrderIds:
-            orderHistories = self.__api.single_order_history(
-                orderno=orderId)
-            if orderHistories is None:
-                logger.info(
-                    f'Order history not found for order id {orderId}')
+    def getNewTrades(self):
+        ret: List[OrderEvent] = []
+        activeOrders: List[Order] = [order for order in self.__broker.getActiveOrders().copy()]
+        orderBook = self.__api.get_order_book()
+        for order in activeOrders:
+            filteredOrders = [orderBookOrder for orderBookOrder in orderBook if orderBookOrder.get('norenordno') == order.getId()]
+            if len(filteredOrders) == 0:
+                logger.warning(f'Order not found in the order book for order id {order.getId()}')
                 continue
 
-            for orderHistory in orderHistories:
-                if orderHistory['stat'] == 'Not_Ok':
-                    errorMsg = orderHistory['emsg']
-                    logger.error(
-                        f'Fetching order history for {orderId} failed with with reason {errorMsg}')
+            orderEvent = OrderEvent(filteredOrders[0])
+
+            if order not in self.__retryData:
+                self.__retryData[order] = {'retryCount': 0, 'lastRetryTime': time.time()}
+
+            if orderEvent.getStat() == 'Not_Ok':
+                logger.error(f'Fetching order history for {orderEvent.getId()} failed with reason {orderEvent.getErrorMessage()}')
+                continue
+            elif orderEvent.getStatus() in ['PENDING', 'TRIGGER_PENDING']:
+                pass
+            elif orderEvent.getStatus() == 'OPEN':
+                retryCount = self.__retryData[order]['retryCount']
+                lastRetryTime = self.__retryData[order]['lastRetryTime']
+
+                if time.time() < (lastRetryTime + TradeMonitor.RETRY_INTERVAL):
                     continue
-                elif orderHistory['status'] in ['OPEN', 'PENDING', 'TRIGGER_PENDING']:
+
+                # Modify the order based on current LTP for retry 0 and convert to market for retry one
+                if retryCount == 0:
+                    ltp = self.__broker.getLastPrice(order.getInstrument())
+                    logger.warning(f'Order {order.getId()} crossed retry interval {TradeMonitor.RETRY_INTERVAL}.'
+                                   f'Retrying attempt {self.__retryData[order]["retryCount"] + 1} with current LTP {ltp}')
+                    self.__broker.modifyOrder(order=order, newprice_type=getPriceType(broker.Order.Type.LIMIT), newprice=ltp)
+                else:
+                    logger.warning(f'Order {order.getId()} crossed retry interval {TradeMonitor.RETRY_INTERVAL}.'
+                                   f'Retrying attempt {self.__retryData[order]["retryCount"] + 1} with market order')
+                    self.__broker.modifyOrder(order=order, newprice_type=getPriceType(broker.Order.Type.MARKET))
+
+                self.__retryData[order]['retryCount'] += 1
+                self.__retryData[order]['lastRetryTime'] = time.time()
+            elif orderEvent.getStatus() in ['CANCELED', 'REJECTED']:
+                if orderEvent.getRejectedReason() is None or orderEvent.getRejectedReason() == 'Order Cancelled':
+                    ret.append(orderEvent)
+                    self.__retryData.pop(order, None)
                     continue
-                elif orderHistory['status'] in ['CANCELED', 'REJECTED', 'COMPLETE']:
-                    ret.append(TradeEvent(orderHistory))
                 else:
                     logger.error(
-                        f'Unknown trade status {orderHistory.get("status", None)}')
+                        f'Order {orderEvent.getId()} {orderEvent.getStatus()} with reason {orderEvent.getRejectedReason()}')
+
+                retryCount = self.__retryData[order]['retryCount']
+                lastRetryTime = self.__retryData[order]['lastRetryTime']
+
+                if retryCount < TradeMonitor.RETRY_COUNT:
+                    if time.time() > (lastRetryTime + TradeMonitor.RETRY_INTERVAL):
+                        logger.warning(f'Order {order.getId()} {orderEvent.getStatus()} with reason {orderEvent.getRejectedReason()}. Retrying attempt {self.__retryData[order]["retryCount"] + 1}')
+                        self.__broker.placeOrder(order)
+                        self.__retryData[order]['retryCount'] += 1
+                        self.__retryData[order]['lastRetryTime'] = time.time()
+                else:
+                    logger.warning(f'Exhausted retry attempts for Order {order.getId()}')
+                    ret.append(orderEvent)
+                    self.__retryData.pop(order, None)
+            elif orderEvent.getStatus() in ['COMPLETE']:
+                ret.append(orderEvent)
+                self.__retryData.pop(order, None)
+            else:
+                logger.error(f'Unknown trade status {orderEvent.getStatus()}')
 
         # Sort by time, so older trades first.
         return sorted(ret, key=lambda t: t.getDateTime())
@@ -423,17 +445,18 @@ class TradeMonitor(threading.Thread):
         return self.__queue
 
     def start(self):
-        trades = self._getNewTrades()
+        trades = self.getNewTrades()
         if len(trades):
             logger.info(
                 f'Last trade found at {trades[-1].getDateTime()}. Order id {trades[-1].getId()}')
+            self.__queue.put((TradeMonitor.ON_USER_TRADE, trades))
 
         super(TradeMonitor, self).start()
 
     def run(self):
         while not self.__stop:
             try:
-                trades = self._getNewTrades()
+                trades = self.getNewTrades()
                 if len(trades):
                     logger.info(f'{len(trades)} new trade/s found')
                     self.__queue.put((TradeMonitor.ON_USER_TRADE, trades))
@@ -450,13 +473,14 @@ class TradeMonitor(threading.Thread):
 class OrderResponse(object):
 
     # Sample Success Response: { "request_time": "10:48:03 20-05-2020", "stat": "Ok", "norenordno": "20052000000017" }
+    # Sample Success Response: { "request_time": "14:14:10 26-05-2020", "stat": "Ok", "result":"20052600000103" }
     # Sample Error Response : { "stat": "Not_Ok", "request_time": "20:40:01 19-05-2020", "emsg": "Error Occurred : 2 "invalid input"" }
 
-    def __init__(self, dict):
-        self.__dict = dict
+    def __init__(self, response):
+        self.__dict: dict = response
 
     def getId(self):
-        return self.__dict["norenordno"]
+        return self.__dict.get('norenordno', self.__dict.get('result', None))
 
     def getDateTime(self):
         return datetime.datetime.strptime(self.__dict["request_time"], "%H:%M:%S %d-%m-%Y")
@@ -472,7 +496,7 @@ class LiveBroker(broker.Broker):
     """A Finvasia live broker.
     
     :param api: Logged in api object.
-    :type api: ShoonyaApi.
+    :type api: NorenApi.
 
     .. note::
         * Only limit orders are supported.
@@ -565,27 +589,41 @@ class LiveBroker(broker.Broker):
     def getHistoricalData(self, exchangeSymbol: str, startTime: datetime.datetime, interval: str) -> pd.DataFrame():
         return getHistoricalData(self.__api, exchangeSymbol, startTime, interval)
 
-    def __init__(self, api: ShoonyaApi):
+    def __init__(self, api: NorenApi, barFeed: BaseBarFeed):
         super(LiveBroker, self).__init__()
         self.__stop = False
-        self.__api = api
+        self.__api: NorenApi = api
+        self.__barFeed: BaseBarFeed = barFeed
         self.__tradeMonitor = TradeMonitor(self)
         self.__cash = 0
         self.__shares = {}
-        self.__activeOrders = {}
+        self.__activeOrders: Dict[str, Order] = dict()
 
     def getApi(self):
         return self.__api
 
+    def getFeed(self):
+        return self.__barFeed
+
+    def getTradeMonitor(self):
+        return self.__tradeMonitor
+    
+    def getLastPrice(self, instrument):
+        ret = None
+        bar = self.getFeed().getLastBar(instrument)
+        if bar is not None:
+            ret = bar.getPrice()
+        return ret
+
     def getInstrumentTraits(self, instrument):
         return QuantityTraits()
 
-    def _registerOrder(self, order):
+    def _registerOrder(self, order: Order):
         assert (order.getId() not in self.__activeOrders)
         assert (order.getId() is not None)
         self.__activeOrders[order.getId()] = order
 
-    def _unregisterOrder(self, order):
+    def _unregisterOrder(self, order: Order):
         assert (order.getId() in self.__activeOrders)
         assert (order.getId() is not None)
         del self.__activeOrders[order.getId()]
@@ -628,19 +666,12 @@ class LiveBroker(broker.Broker):
         self.__tradeMonitor.start()
         self.__stop = False  # No errors. Keep running.
 
-    def _onTrade(self, order, trade):
+    def _onTrade(self, order: Order, trade: OrderEvent):
         if trade.getStatus() == 'REJECTED' or trade.getStatus() == 'CANCELED':
-            if trade.getRejectedReason() is not None:
-                logger.error(
-                    f'Order {trade.getId()} rejected with reason {trade.getRejectedReason()}')
             self._unregisterOrder(order)
             order.switchState(broker.Order.State.CANCELED)
             self.notifyOrderEvent(broker.OrderEvent(
                 order, broker.OrderEvent.Type.CANCELED, None))
-        # elif trade.getStatus() == 'OPEN':
-        #     order.switchState(broker.Order.State.ACCEPTED)
-        #     self.notifyOrderEvent(broker.OrderEvent(
-        #         order, broker.OrderEvent.Type.ACCEPTED, None))
         elif trade.getStatus() == 'COMPLETE':
             fee = 0
             orderExecutionInfo = broker.OrderExecutionInfo(
@@ -655,6 +686,7 @@ class LiveBroker(broker.Broker):
                 eventType = broker.OrderEvent.Type.PARTIALLY_FILLED
             self.notifyOrderEvent(broker.OrderEvent(
                 order, eventType, orderExecutionInfo))
+            logger.info(f'Order filled<{order.isFilled()}> for {order.getInstrument()} at <{orderExecutionInfo.getDateTime()}>. Avg Filled Price <{orderExecutionInfo.getPrice()}>. Quantity <{orderExecutionInfo.getQuantity()}>')
         else:
             logger.error(f'Unknown order status {trade.getStatus()}')
 
@@ -689,16 +721,15 @@ class LiveBroker(broker.Broker):
         return self.__stop
 
     def dispatch(self):
-        # Switch orders from SUBMITTED to ACCEPTED.
-        ordersToProcess = list(self.__activeOrders.values())
-        for order in ordersToProcess:
-            if order.isSubmitted():
-                order.switchState(broker.Order.State.ACCEPTED)
-                self.notifyOrderEvent(broker.OrderEvent(
-                    order, broker.OrderEvent.Type.ACCEPTED, None))
-
-        # Dispatch events from the trade monitor.
         try:
+            # Switch orders from SUBMITTED to ACCEPTED.
+            ordersToProcess = list(self.__activeOrders.values())
+            for order in ordersToProcess:
+                if order.isSubmitted():
+                    order.switchState(broker.Order.State.ACCEPTED)
+                    self.notifyOrderEvent(broker.OrderEvent(
+                        order, broker.OrderEvent.Type.ACCEPTED, None))
+
             eventType, eventData = self.__tradeMonitor.getQueue().get(
                 True, LiveBroker.QUEUE_TIMEOUT)
 
@@ -709,6 +740,8 @@ class LiveBroker(broker.Broker):
                     "Invalid event received to dispatch: %s - %s" % (eventType, eventData))
         except six.moves.queue.Empty:
             pass
+        except Exception as e:
+            logger.exception(e)
 
     def peekDateTime(self):
         # Return None since this is a realtime subject.
@@ -726,6 +759,9 @@ class LiveBroker(broker.Broker):
 
     def getPositions(self):
         return self.__shares
+
+    def getActiveOrder(self, orderId):
+        return self.__activeOrders.get(orderId)
 
     def getActiveOrders(self, instrument=None):
         return list(self.__activeOrders.values())
@@ -763,37 +799,53 @@ class LiveBroker(broker.Broker):
 # Cancel a New Order by providing the Order Number
 #     api.cancel_order(orderno=orderno)
 
-    def __placeOrder(self, buyOrSell, productType, exchange, symbol, quantity, price, priceType, triggerPrice, retention, remarks):
+    def modifyOrder(self, order: Order, newprice_type=None, newprice=0.0):
         try:
-            orderResponse = self.__api.place_order(buy_or_sell=buyOrSell, product_type=productType,
-                                                   exchange=exchange, tradingsymbol=symbol,
-                                                   quantity=quantity, discloseqty=0, price_type=priceType,
-                                                   price=price, trigger_price=triggerPrice,
-                                                   retention=retention, remarks=remarks)
-        except Exception as e:
-            raise Exception(e)
-
-        if orderResponse is None:
-            raise Exception('place_order returned None')
-
-        ret = OrderResponse(orderResponse)
-
-        if ret.getStat() != "Ok":
-            raise Exception(ret.getErrorMessage())
-
-        return ret
-
-    def submitOrder(self, order):
-        if order.isInitial():
-            # Override user settings based on Finvasia limitations.
-            order.setAllOrNone(False)
-            order.setGoodTillCanceled(True)
-
-            buyOrSell = 'B' if order.isBuy() else 'S'
-            # "C" For CNC, "M" FOR NRML, "I" FOR MIS, "B" FOR BRACKET ORDER, "H" FOR COVER ORDER
-            productType = 'I'
             splitStrings = order.getInstrument().split('|')
             exchange = splitStrings[0] if len(splitStrings) > 1 else 'NSE'
+            symbol = splitStrings[1] if len(
+                splitStrings) > 1 else order.getInstrument()
+            quantity = order.getQuantity()
+
+            modifyOrderResponse = self.__api.modify_order(orderno=order.getId(),
+                                                    exchange=exchange,
+                                                    tradingsymbol=symbol,
+                                                    newquantity=quantity,
+                                                    newprice_type=newprice_type,
+                                                    newprice=newprice,
+                                                    newtrigger_price=None,
+                                                    bookloss_price = 0.0,
+                                                    bookprofit_price = 0.0,
+                                                    trail_price = 0.0)
+
+            if modifyOrderResponse is None:
+                raise Exception('modify_order returned None')
+
+            ret = OrderResponse(modifyOrderResponse)
+
+            if ret.getStat() != "Ok":
+                raise Exception(ret.getErrorMessage())
+            
+            oldOrderId = order.getId()
+            if oldOrderId is not None:
+                self._unregisterOrder(order)
+            
+            order.setSubmitted(ret.getId(),
+                                ret.getDateTime())
+            self._registerOrder(order)
+
+            logger.info(
+                f'Modified {newprice_type} {"Buy" if order.isBuy() else "Sell"} Order {oldOrderId} with New order {order.getId()} at {order.getSubmitDateTime()}')
+        except Exception as e:
+            logger.critical(f'Could not place order for {symbol}. Reason: {e}')
+
+    def placeOrder(self, order: Order):
+        try:
+            buyOrSell = 'B' if order.isBuy() else 'S'
+            splitStrings = order.getInstrument().split('|')
+            exchange = splitStrings[0] if len(splitStrings) > 1 else 'NSE'
+            # "C" For CNC, "M" FOR NRML, "I" FOR MIS, "B" FOR BRACKET ORDER, "H" FOR COVER ORDER
+            productType = 'I' if exchange != 'BFO' else 'M'
             symbol = splitStrings[1] if len(
                 splitStrings) > 1 else order.getInstrument()
             quantity = order.getQuantity()
@@ -801,37 +853,49 @@ class LiveBroker(broker.Broker):
                 broker.Order.Type.LIMIT, broker.Order.Type.STOP_LIMIT] else 0
             stopPrice = order.getStopPrice() if order.getType() in [
                 broker.Order.Type.STOP_LIMIT] else 0
-            priceType = {
-                # LMT / MKT / SL-LMT / SL-MKT / DS / 2L / 3L
-                broker.Order.Type.MARKET: 'MKT',
-                broker.Order.Type.LIMIT: 'LMT',
-                broker.Order.Type.STOP_LIMIT: 'SL-LMT',
-                broker.Order.Type.STOP: 'SL-MKT'
-            }.get(order.getType())
+            priceType = getPriceType(order.getType())
             retention = 'DAY'  # DAY / EOS / IOC
 
             logger.info(
-                f'Placing {priceType} {"Buy" if order.isBuy() else "Sell"} order for {order.getInstrument()} with {quantity} quantity')
-            try:
-                finvasiaOrder = self.__placeOrder(buyOrSell,
-                                                  productType,
-                                                  exchange,
-                                                  symbol,
-                                                  quantity,
-                                                  price,
-                                                  priceType,
-                                                  stopPrice,
-                                                  retention,
-                                                  None)
-            except Exception as e:
-                logger.critical(f'Could not place order for {symbol}. Reason: {e}')
-                return
+                f'Placing order with buyOrSell={buyOrSell}, product_type={productType}, exchange={exchange}, '
+                f'tradingsymbol={symbol}, quantity={quantity}, discloseqty=0, price_type={priceType}, '
+                f'price={price}, trigger_price={stopPrice}, retention={retention}, remarks="PyAlgoMate order"')
+            placedOrderResponse = self.__api.place_order(buy_or_sell=buyOrSell, product_type=productType,
+                                                    exchange=exchange, tradingsymbol=symbol,
+                                                    quantity=quantity, discloseqty=0, price_type=priceType,
+                                                    price=price, trigger_price=stopPrice,
+                                                    retention=retention, remarks=f'PyAlgoMate order')
+
+            if placedOrderResponse is None:
+                raise Exception('place_order returned None')
+
+            orderResponse = OrderResponse(placedOrderResponse)
+
+            if orderResponse.getStat() != "Ok":
+                raise Exception(orderResponse.getErrorMessage())
+            
+            oldOrderId = order.getId()
+            if oldOrderId is not None:
+                self._unregisterOrder(order)
+            
+            order.setSubmitted(orderResponse.getId(),
+                                orderResponse.getDateTime())
+
+            self._registerOrder(order)
 
             logger.info(
-                f'Placed {priceType} {"Buy" if order.isBuy() else "Sell"} order {finvasiaOrder.getId()} at {finvasiaOrder.getDateTime()}')
-            order.setSubmitted(finvasiaOrder.getId(),
-                               finvasiaOrder.getDateTime())
-            self._registerOrder(order)
+                f'Placed {priceType} {"Buy" if order.isBuy() else "Sell"} Order {oldOrderId} New order {order.getId()} at {order.getSubmitDateTime()}')            
+        except Exception as e:
+            logger.critical(f'Could not place order for {symbol}. Reason: {e}')
+
+    def submitOrder(self, order: Order):
+        if order.isInitial():
+            # Override user settings based on Finvasia limitations.
+            order.setAllOrNone(False)
+            order.setGoodTillCanceled(True)
+
+            self.placeOrder(order)
+
             # Switch from INITIAL -> SUBMITTED
             # IMPORTANT: Do not emit an event for this switch because when using the position interface
             # the order is not yet mapped to the position and Position.onOrderUpdated will get called.
@@ -871,22 +935,26 @@ class LiveBroker(broker.Broker):
     def createStopLimitOrder(self, action, instrument, stopPrice, limitPrice, quantity):
         return self._createOrder(broker.StopLimitOrder, action, instrument, quantity, limitPrice, stopPrice)
 
-    def cancelOrder(self, order):
-        activeOrder = self.__activeOrders.get(order.getId())
+    def cancelOrder(self, order: Order):
+        activeOrder: Order = self.__activeOrders.get(order.getId())
         if activeOrder is None:
             raise Exception("The order is not active anymore")
         if activeOrder.isFilled():
             raise Exception("Can't cancel order that has already been filled")
 
-        self.__api.cancel_order(orderno=order.getId())
-        self._unregisterOrder(order)
-        order.switchState(broker.Order.State.CANCELED)
+        try:
+            cancelOrderResponse = self.__api.cancel_order(orderno=order.getId())
 
-        # Update cash and shares.
-        self.refreshAccountBalance()
+            if cancelOrderResponse is None:
+                raise Exception('cancel_order returned None')
 
-        # Notify that the order was canceled.
-        self.notifyOrderEvent(broker.OrderEvent(
-            order, broker.OrderEvent.Type.CANCELED, "User requested cancellation"))
+            orderResponse = OrderResponse(cancelOrderResponse)
+
+            if orderResponse.getStat() != "Ok":
+                raise Exception(orderResponse.getErrorMessage())
+
+            logger.info(f'Canceled order {orderResponse.getId()} at {orderResponse.getDateTime()}')
+        except Exception as e:
+            logger.critical(f'Could not cancel order for {order.getId()}. Reason: {e}')
 
     # END broker.Broker interface
